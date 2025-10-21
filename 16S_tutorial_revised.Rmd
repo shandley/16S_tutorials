@@ -74,62 +74,149 @@ We'll analyze the bacterial microbiome across these treatment groups to:
 Before we begin, we need to install and load several R packages. This section teaches you about package management - an important skill for reproducible research.
 
 **What are R packages?**
+
 Packages are collections of functions, data, and documentation that extend R's capabilities. For microbiome analysis, we need specialized packages that aren't included with base R.
 
-**First time setup:** If you haven't already, run the `setup_packages.R` script to install all required packages. You only need to do this once per Posit Cloud project.
+**Two types of packages:**
 
-### Check and Load Packages
+1. **CRAN packages** - General R packages installed with `install.packages()`
+2. **Bioconductor packages** - Specialized biology/genomics packages installed with `BiocManager::install()`
 
-This code chunk checks if packages are installed and provides helpful error messages if they're missing:
+### Step 1: Install Required Packages
 
-```{r load-libraries}
-# Function to load packages and provide helpful error messages
-load_package <- function(pkg) {
-  if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
-    stop(paste0(
-      "Package '", pkg, "' is not installed.\n",
-      "Please run the setup_packages.R script first, or install with:\n",
-      if (pkg %in% c("phyloseq", "DESeq2")) {
-        paste0("BiocManager::install('", pkg, "')")
-      } else {
-        paste0("install.packages('", pkg, "')")
-      }
-    ))
+**IMPORTANT:** Run this code chunk ONCE when you first open this tutorial. You do NOT need to run it again in future sessions.
+
+```{r install-packages, eval=FALSE}
+# This chunk has eval=FALSE so it won't run automatically when you knit
+# You need to run it manually the first time
+
+cat("=================================================\n")
+cat("STEP 1: Installing BiocManager\n")
+cat("=================================================\n")
+# BiocManager is needed to install Bioconductor packages
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+  cat("BiocManager installed successfully!\n\n")
+} else {
+  cat("BiocManager already installed.\n\n")
+}
+
+cat("=================================================\n")
+cat("STEP 2: Installing CRAN packages\n")
+cat("=================================================\n")
+# These are general R packages from CRAN
+cran_packages <- c("tidyverse", "vegan", "ggpubr", "gridExtra")
+
+for (pkg in cran_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    cat("Installing:", pkg, "\n")
+    install.packages(pkg)
+  } else {
+    cat("Already installed:", pkg, "\n")
   }
 }
 
-# Load required packages
-cat("Loading required packages...\n")
+cat("\n=================================================\n")
+cat("STEP 3: Installing Bioconductor packages\n")
+cat("=================================================\n")
+# These are specialized genomics packages from Bioconductor
+bioc_packages <- c("phyloseq", "DESeq2")
 
-# Core microbiome analysis
-load_package("phyloseq")
+for (pkg in bioc_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    cat("Installing:", pkg, "\n")
+    BiocManager::install(pkg, update = FALSE, ask = FALSE)
+  } else {
+    cat("Already installed:", pkg, "\n")
+  }
+}
 
-# Data manipulation and visualization
-load_package("tidyverse")
+cat("\n=================================================\n")
+cat("Installation complete!\n")
+cat("You can now run the next code chunk to load packages.\n")
+cat("=================================================\n")
+```
 
-# Statistical testing
-load_package("vegan")        # For PERMANOVA and ecological statistics
-load_package("ggpubr")       # For adding statistics to plots
+**What just happened?**
 
-# Differential abundance testing
-load_package("DESeq2")       # For identifying differentially abundant taxa
+- We installed **BiocManager** (a tool for installing biology packages)
+- We installed **4 CRAN packages** for data analysis and visualization
+- We installed **2 Bioconductor packages** for microbiome analysis
+- Each package only installs if it's not already present
+- This takes 5-10 minutes total
 
-# Additional plotting
-load_package("gridExtra")    # For arranging multiple plots
+**Installation time:**
+- BiocManager: ~30 seconds
+- CRAN packages: ~3-5 minutes
+- Bioconductor packages: ~3-5 minutes
+- **Total: 5-10 minutes**
 
-cat("All packages loaded successfully!\n\n")
+### Step 2: Load Packages
+
+**Run this chunk every time** you open the tutorial in a new R session:
+
+```{r load-libraries, message=TRUE}
+# This chunk loads packages that are already installed
+# If a package is missing, you'll get a clear error message
+
+cat("Loading required packages...\n\n")
+
+# Core microbiome analysis (Bioconductor)
+library(phyloseq)
+cat("✓ phyloseq loaded\n")
+
+# Data manipulation and visualization (CRAN)
+library(tidyverse)
+cat("✓ tidyverse loaded\n")
+
+# Statistical testing (CRAN)
+library(vegan)
+cat("✓ vegan loaded\n")
+
+library(ggpubr)
+cat("✓ ggpubr loaded\n")
+
+# Differential abundance testing (Bioconductor)
+library(DESeq2)
+cat("✓ DESeq2 loaded\n")
+
+# Additional plotting (CRAN)
+library(gridExtra)
+cat("✓ gridExtra loaded\n")
+
+cat("\nAll packages loaded successfully!\n")
+cat("You're ready to start the analysis.\n\n")
 
 # Set a random seed for reproducibility
 # This ensures statistical tests give the same results each time
 set.seed(12345)
 ```
 
-**Why these packages?**
+### Troubleshooting
 
-- **phyloseq:** Specialized for microbiome data - organizes sequences, taxonomy, and metadata together
+**If you get "there is no package called 'X'" error:**
+
+1. Make sure you ran the **install-packages** chunk above
+2. Wait for installation to complete (don't interrupt it)
+3. Try running the **load-libraries** chunk again
+
+**If installation fails:**
+
+Try installing packages one at a time in the Console:
+```r
+# For CRAN packages:
+install.packages("tidyverse")
+
+# For Bioconductor packages:
+BiocManager::install("phyloseq")
+```
+
+### Why These Packages?
+
+- **phyloseq:** Organizes microbiome data (sequences, taxonomy, metadata, phylogeny)
 - **tidyverse:** Modern R tools for data manipulation (dplyr) and visualization (ggplot2)
-- **vegan:** Ecological statistics, including PERMANOVA for comparing communities
-- **DESeq2:** Statistical testing for count data, originally designed for RNA-seq
+- **vegan:** Ecological statistics including PERMANOVA for comparing communities
+- **DESeq2:** Statistical testing for count data (finds differentially abundant bacteria)
 - **ggpubr:** Adds statistical annotations to plots
 - **gridExtra:** Arranges multiple plots into panels
 
