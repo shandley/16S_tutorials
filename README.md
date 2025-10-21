@@ -97,16 +97,17 @@ source("setup_packages.R")
 ## File Organization
 
 ```
-16S_tutorials/
+16S_tutorial/
 ├── 16S_tutorial_revised.Rmd        # Main tutorial
 ├── 16S_tutorials.Rproj             # RStudio project file
 ├── setup_packages.R                # One-time package installation
 ├── STUDENT_INSTRUCTIONS.md         # Step-by-step student guide
 ├── INSTRUCTOR_SETUP.md             # Instructor setup guide
 ├── README.md                       # This file
+├── TUTORIAL_REDESIGN_RECOMMENDATIONS.md  # Enhancement documentation
 └── data/
-    ├── 16S_mapping.txt             # Sample metadata
-    └── 16S_tutorial_data.RDS       # Phyloseq object
+    ├── 16S_mapping.txt             # Sample metadata (520 samples)
+    └── 16S_tutorial_data.RDS       # Phyloseq object (503KB)
 ```
 
 ## Data Source
