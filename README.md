@@ -51,6 +51,7 @@ library(DESeq2)
 library(tidyverse)
 library(ggpubr)
 library(gridExtra)
+library(here)  # Smart file paths
 ```
 
 See `PACKAGE_MANAGEMENT.md` for detailed installation instructions and options.

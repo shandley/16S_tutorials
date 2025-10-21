@@ -54,7 +54,8 @@ cran_packages <- c(
   "tidyverse",    # Data manipulation and visualization
   "vegan",        # Ecological statistics and PERMANOVA
   "ggpubr",       # Publication-ready plots with statistics
-  "gridExtra"     # Arranging multiple plots
+  "gridExtra",    # Arranging multiple plots
+  "here"          # Smart file paths that work on any computer
 )
 
 install_if_missing(cran_packages)

@@ -88,7 +88,6 @@ Packages extend R's capabilities with specialized functions. For microbiome anal
 
 ```{r load-libraries, message=FALSE, warning=FALSE}
 # Load required packages
-# All packages should be pre-installed in this Posit Cloud project
 
 library(phyloseq)
 library(tidyverse)
@@ -96,10 +95,14 @@ library(vegan)
 library(ggpubr)
 library(DESeq2)
 library(gridExtra)
+library(here)  # For smart file paths that work on any computer
 
 # Set a random seed for reproducibility
 # This ensures statistical tests give the same results each time
 set.seed(12345)
+
+# Verify we're in the right place
+cat("Project directory:", here(), "\n")
 ```
 
 **Ready to go!** All packages loaded successfully. You can now proceed with the analysis.
@@ -121,12 +124,15 @@ This format keeps everything organized and connected!
 
 ## Load the Data
 
+**About file paths:** We use the `here()` function to build file paths. This works on any computer, regardless of where students save the project folder.
+
 ```{r load-data}
 # Read the phyloseq object containing sequence counts and taxonomy
-ps0 <- readRDS(file = "/cloud/project/data/16S_tutorial_data.RDS")
+# here() finds the project root and builds the path from there
+ps0 <- readRDS(file = here("data", "16S_tutorial_data.RDS"))
 
 # Read the sample metadata (mapping file)
-map <- import_qiime_sample_data("/cloud/project/data/16S_mapping.txt")
+map <- import_qiime_sample_data(here("data", "16S_mapping.txt"))
 
 # Merge them together
 ps0 <- merge_phyloseq(ps0, map)
@@ -134,6 +140,13 @@ ps0 <- merge_phyloseq(ps0, map)
 # Display summary
 ps0
 ```
+
+**What just happened?**
+
+- `here("data", "16S_tutorial_data.RDS")` automatically builds the full path to the data file
+- Works on Windows, Mac, and Linux
+- Works regardless of where the project folder is saved
+- As long as you opened the `.Rproj` file, `here()` knows where the data is!
 
 ## Explore the Dataset Structure
 
