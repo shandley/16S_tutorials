@@ -21,14 +21,17 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width =
 By the end of this tutorial, you will be able to:
 
 1. **Explore** a 16S rRNA amplicon dataset using the phyloseq package
-2. **Assess** data quality and make informed decisions about sample/taxon filtering
-3. **Visualize** microbial community composition across experimental groups
-4. **Calculate and interpret** alpha diversity metrics (richness and evenness)
-5. **Perform and interpret** beta diversity analysis using ordination and PERMANOVA
-6. **Identify** differentially abundant taxa between treatment groups
-7. **Connect** microbiome patterns to biological outcomes (survival)
+2. **Assess** sequencing depth adequacy using rarefaction curves
+3. **Make informed decisions** about data quality, sample filtering, and normalization
+4. **Compare** different beta diversity metrics (UniFrac vs Bray-Curtis) and understand when to use each
+5. **Calculate and interpret** alpha diversity metrics (richness and evenness)
+6. **Perform and interpret** ordination analysis and PERMANOVA tests
+7. **Identify** differentially abundant taxa using DESeq2
+8. **Design and execute** independent exploratory analyses
+9. **Connect** microbiome patterns to biological outcomes (survival)
+10. **Evaluate** the robustness of conclusions across different analytical approaches
 
-**Time to complete:** 60-90 minutes
+**Time to complete:** 90-100 minutes
 
 ---
 
@@ -354,10 +357,94 @@ ps2 <- ps1 %>%
   )
 
 cat("After filtering:", ntaxa(ps2), "ASVs\n\n")
-
-# Clean up
-rm(ps0, ps1)
 ```
+
+## Assessing Sequencing Depth: Rarefaction
+
+Before proceeding with analysis, we need to ask: **Have we sequenced deeply enough to capture most bacterial diversity?**
+
+### What is Rarefaction?
+
+Rarefaction curves show how many unique ASVs (species) we detect as we add more sequencing reads.
+
+- **If curves plateau:** We've sequenced enough - adding more reads won't find many new species
+- **If curves keep rising:** Deeper sequencing would reveal more diversity
+
+Think of it like bird watching: if you keep seeing new species with each hour of observation, you haven't sampled enough. If you stop seeing new species, you've captured most of the diversity.
+
+```{r rarefaction-curves}
+# Calculate rarefaction curves
+# This randomly subsamples reads and counts unique ASVs at each depth
+rare_curve_data <- rarecurve(
+  t(otu_table(ps2)),  # Transpose to correct format
+  step = 100,         # Calculate every 100 reads
+  label = FALSE       # Don't label each curve
+)
+
+# The plot shows one curve per sample
+# X-axis: number of reads
+# Y-axis: number of unique ASVs detected
+```
+
+**Interpretation:**
+- Do the curves flatten out (plateau)?
+- Which samples have the steepest curves (highest diversity)?
+- Are there samples with very low read counts?
+
+### Rarefaction by Treatment Group
+
+Let's color the curves by treatment to see patterns:
+
+```{r rarefaction-by-treatment, fig.height=8}
+# Create a more informative rarefaction plot colored by treatment
+sample_colors <- sample_data(ps2)$treatment
+color_palette <- c("Vehicle" = "black", "Amp" = "chocolate",
+                   "Metro" = "green", "AmpMetro" = "purple")
+
+# Plot rarefaction curves
+rarecurve(
+  t(otu_table(ps2)),
+  step = 100,
+  col = color_palette[sample_colors],
+  lwd = 1,
+  xlab = "Number of Reads",
+  ylab = "Number of ASVs Observed",
+  main = "Rarefaction Curves by Treatment Group"
+)
+
+# Add legend
+legend("bottomright",
+       legend = names(color_palette),
+       col = color_palette,
+       lwd = 2,
+       title = "Treatment")
+```
+
+**What do you notice?**
+
+- Vehicle (control) samples: High diversity, curves plateau nicely
+- Antibiotic-treated samples: Lower diversity (especially Amp+Metro)
+- Some samples have very few reads - these are heavily depleted microbiomes!
+
+### Should We Rarefy?
+
+**Rarefying** means subsampling all samples to the same read depth (e.g., 1,000 reads each). This is controversial:
+
+**Arguments FOR rarefying:**
+- Makes samples directly comparable
+- Removes sequencing depth bias
+
+**Arguments AGAINST rarefying:**
+- Throws away data (you worked hard to sequence those reads!)
+- Reduces statistical power
+- Modern methods (like DESeq2) handle library size differences internally
+
+**Our decision:** We will **NOT** rarefy because:
+1. DESeq2 automatically accounts for sequencing depth
+2. We want to preserve all our data
+3. Low read counts in antibiotic samples are biologically meaningful (depleted communities)
+
+**Pause and think:** Do you agree with this decision? Why or why not?
 
 ---
 
@@ -368,10 +455,16 @@ rm(ps0, ps1)
 1. We have **`r nsamples(ps2)` samples** from WNV-infected mice across 4 treatment groups
 2. Samples were collected at **8 timepoints** (D0 through D20)
 3. We kept **`r ntaxa(ps2)` bacterial ASVs** after quality filtering
-4. Antibiotic-treated samples (especially Amp+Metro) have **fewer reads**, reflecting depleted microbiomes
-5. This is **real biology**, not technical failure!
+4. **Rarefaction curves** showed that most samples reached saturation - we sequenced deeply enough
+5. Antibiotic-treated samples have **lower diversity and fewer reads** - this is depleted microbiomes, not poor sequencing!
+6. We chose **NOT to rarefy** because modern methods handle library size differences
 
-**Biological insight:** Antibiotics are working! They're depleting the gut bacteria.
+**Key decisions made:**
+- Removed low-quality samples based on informed criteria
+- Kept biologically meaningful low-read samples (depleted communities)
+- Used full dataset without rarefaction for maximum statistical power
+
+**Biological insight:** Antibiotics are working! They're dramatically depleting gut bacteria, especially with combination therapy.
 
 ---
 
@@ -576,55 +669,138 @@ print(p_beta_facet)
 - Which axis (PC1 or PC2) best separates treatments?
 - How do communities change over time?
 
+## Comparing Distance Metrics: UniFrac vs Bray-Curtis
+
+Different distance metrics measure different aspects of community similarity. Let's compare two common approaches:
+
+**UniFrac (what we just used):**
+- **Phylogenetic** - considers evolutionary relationships
+- Closely related bacteria are weighted as more similar
+- Requires a phylogenetic tree
+
+**Bray-Curtis:**
+- **Abundance-based** - ignores evolutionary relationships
+- Focuses purely on which taxa are present and how abundant
+- Doesn't require a phylogenetic tree
+
+**Question:** Will we see the same patterns with both metrics?
+
+```{r beta-bray-curtis}
+# Calculate Bray-Curtis distances
+ord_bray <- ordinate(ps2, method = "PCoA", distance = "bray")
+
+# How much variation does each axis explain?
+eigenvalues_bray <- ord_bray$values$Eigenvalues
+variance_bray <- eigenvalues_bray / sum(eigenvalues_bray) * 100
+
+# Plot Bray-Curtis ordination
+p_beta_bray <- plot_ordination(ps2, ord_bray,
+                               color = "treatment",
+                               shape = "treatment") +
+  geom_point(size = 3, alpha = 0.7) +
+  stat_ellipse(type = "norm", linetype = 2) +
+  labs(
+    title = "Beta Diversity: Bray-Curtis PCoA",
+    subtitle = "Abundance-based distance (no phylogeny)",
+    x = paste0("PC1 (", round(variance_bray[1], 1), "%)"),
+    y = paste0("PC2 (", round(variance_bray[2], 1), "%)")
+  ) +
+  theme_bw()
+
+print(p_beta_bray)
+```
+
+### Side-by-Side Comparison
+
+```{r compare-distances, fig.width=12, fig.height=5}
+# Compare UniFrac and Bray-Curtis side by side
+gridExtra::grid.arrange(
+  p_beta_treatment + labs(title = "UniFrac (Phylogenetic)"),
+  p_beta_bray + labs(title = "Bray-Curtis (Abundance-based)"),
+  ncol = 2
+)
+```
+
+**Compare the two plots:**
+
+1. Are the treatment groups separated similarly in both?
+2. Which metric explains more variance on PC1?
+3. Do the ellipses overlap more in one vs the other?
+4. Which metric would you trust more for this dataset? Why?
+
+**Key insight:** Different distance metrics can give different results! The choice matters for your conclusions.
+
 ## PERMANOVA - Statistical Testing
 
 **PERMANOVA** tests if group centroids differ significantly (like ANOVA for multivariate data).
 
-```{r permanova}
-# Extract sample data and distance matrix
-sampledf <- as.data.frame(sample_data(ps2))
-unifrac_dist <- phyloseq::distance(ps2, method = "unifrac")
+Let's test BOTH distance metrics to see if our conclusions are robust:
 
-# Test: Does treatment affect community composition?
+```{r permanova}
+# Extract sample data
+sampledf <- as.data.frame(sample_data(ps2))
+
+# Calculate both distance matrices
+unifrac_dist <- phyloseq::distance(ps2, method = "unifrac")
+bray_dist <- phyloseq::distance(ps2, method = "bray")
+
+cat("========================================\n")
+cat("PERMANOVA: UniFrac Distance\n")
+cat("========================================\n\n")
+
+# Test: Does treatment affect community composition? (UniFrac)
 set.seed(12345)
-permanova_treatment <- adonis2(unifrac_dist ~ treatment,
+permanova_treatment_uni <- adonis2(unifrac_dist ~ treatment,
+                                   data = sampledf,
+                                   permutations = 999)
+cat("Effect of Treatment:\n")
+print(permanova_treatment_uni)
+
+# Combined model: Treatment + Time (UniFrac)
+permanova_both_uni <- adonis2(unifrac_dist ~ treatment + treatment_days,
+                              data = sampledf,
+                              permutations = 999)
+cat("\nCombined Model (Treatment + Timepoint):\n")
+print(permanova_both_uni)
+
+cat("\n========================================\n")
+cat("PERMANOVA: Bray-Curtis Distance\n")
+cat("========================================\n\n")
+
+# Test: Does treatment affect community composition? (Bray-Curtis)
+set.seed(12345)
+permanova_treatment_bray <- adonis2(bray_dist ~ treatment,
+                                    data = sampledf,
+                                    permutations = 999)
+cat("Effect of Treatment:\n")
+print(permanova_treatment_bray)
+
+# Combined model: Treatment + Time (Bray-Curtis)
+permanova_both_bray <- adonis2(bray_dist ~ treatment + treatment_days,
                                data = sampledf,
                                permutations = 999)
-cat("PERMANOVA: Effect of Treatment\n")
-print(permanova_treatment)
-
-# Test: What about timepoint?
-permanova_time <- adonis2(unifrac_dist ~ treatment_days,
-                         data = sampledf,
-                         permutations = 999)
-cat("\nPERMANOVA: Effect of Timepoint\n")
-print(permanova_time)
-
-# Combined model: Treatment + Time
-permanova_both <- adonis2(unifrac_dist ~ treatment + treatment_days,
-                         data = sampledf,
-                         permutations = 999)
-cat("\nPERMANOVA: Combined Model\n")
-print(permanova_both)
-
-# Pairwise comparisons between treatments
-# (Using Day 7 as example)
-ps2_d7 <- subset_samples(ps2, treatment_days == "D7")
-sampledf_d7 <- as.data.frame(sample_data(ps2_d7))
-unifrac_dist_d7 <- phyloseq::distance(ps2_d7, method = "unifrac")
-
-set.seed(12345)
-permanova_d7 <- adonis2(unifrac_dist_d7 ~ treatment,
-                        data = sampledf_d7,
-                        permutations = 999)
-cat("\nPERMANOVA at Day 7 Only:\n")
-print(permanova_d7)
+cat("\nCombined Model (Treatment + Timepoint):\n")
+print(permanova_both_bray)
 ```
 
 **Interpretation:**
-- **R²** tells you how much variation is explained
-- **p-value < 0.05** means groups differ significantly
-- What explains more variation: treatment or time?
+
+Compare the results across distance metrics:
+
+1. **R² values:** How much variation is explained?
+   - UniFrac treatment R²: _____
+   - Bray-Curtis treatment R²: _____
+
+2. **P-values:** Are both significant?
+
+3. **Agreement:** Do both metrics lead to the same biological conclusion?
+
+4. **Which is "better"?**
+   - If you care about phylogeny: UniFrac
+   - If you care about abundance patterns: Bray-Curtis
+   - If both agree: More confident in results!
+
+**Key finding:** Treatment significantly affects microbiome composition regardless of distance metric used!
 
 ---
 
@@ -878,6 +1054,116 @@ if(length(top_asvs) > 0) {
 - Which bacterial families/genera are depleted by Amp+Metro?
 - Are any bacteria *enriched* by antibiotics? (These might be antibiotic-resistant!)
 - How does this connect to mouse survival?
+
+---
+
+# Part 6.5: Your Turn - Independent Exploration
+
+Now it's your chance to design and execute your own analysis! You've learned the key techniques - time to apply them to a question that interests YOU.
+
+## Choose Your Own Analysis
+
+Pick ONE of the following explorations:
+
+### Option 1: Different Treatment Comparison
+
+**Question:** How does Ampicillin alone compare to Metronidazole alone?
+
+**Your task:**
+- Subset data to Amp and Metro groups only
+- Compare their alpha diversity (Day 7)
+- Run PERMANOVA to test beta diversity differences
+- Identify differentially abundant taxa
+
+**Template code:**
+```r
+# Option 1: Compare Amp vs Metro
+ps_amp_metro <- subset_samples(ps2, treatment %in% c("Amp", "Metro"))
+
+# Your analysis here:
+# - Alpha diversity comparison
+# - Beta diversity ordination
+# - PERMANOVA test
+# - DESeq2 differential abundance
+```
+
+### Option 2: Baseline Predictors of Survival
+
+**Question:** At Day 0 (before symptoms), can microbiome predict who will survive?
+
+**Your task:**
+- Subset to Day 0 samples
+- Compare alpha diversity: Alive vs Dead
+- Run ordination colored by survival
+- PERMANOVA test: survival_status
+
+**Template code:**
+```r
+# Option 2: Day 0 microbiome and survival
+ps_day0 <- subset_samples(ps2, treatment_days == "D0")
+
+# Your analysis here:
+# - Alpha diversity by survival status
+# - Ordination colored by survival_status
+# - PERMANOVA test
+# - Interpret: can we predict survival from baseline microbiome?
+```
+
+### Option 3: Time Series Deep Dive
+
+**Question:** How does ONE treatment group change over time?
+
+**Your task:**
+- Pick one treatment (e.g., Vehicle or AmpMetro)
+- Plot alpha diversity trajectory
+- Create ordination with time progression
+- Identify which taxa change most over time
+
+**Template code:**
+```r
+# Option 3: Time series for one treatment
+treatment_choice <- "Vehicle"  # Change this to your choice
+ps_timeseries <- subset_samples(ps2, treatment == treatment_choice)
+
+# Your analysis here:
+# - Alpha diversity over time (line plot)
+# - Beta diversity ordination colored by day
+# - Community composition changes
+```
+
+## Work Space
+
+Use the code chunk below for your exploration:
+
+```{r student-exploration}
+# Choose your option above and write your analysis here
+
+# Step 1: Subset your data
+
+
+# Step 2: Visualize
+
+
+# Step 3: Statistical testing
+
+
+# Step 4: Interpret your findings
+
+```
+
+## Reflection Questions
+
+After completing your analysis, answer these:
+
+1. **What pattern did you find?**
+
+2. **Was it what you expected? Why or why not?**
+
+3. **What biological explanation might account for your findings?**
+
+4. **What would you do next to follow up on this result?**
+
+5. **What limitations does your analysis have?**
 
 ---
 
