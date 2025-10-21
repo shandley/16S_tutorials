@@ -55,49 +55,58 @@ library(gridExtra)
 
 See `PACKAGE_MANAGEMENT.md` for detailed installation instructions and options.
 
-## Quick Start
+## Quick Start for Students
 
-### Option 1: Automated Setup (Recommended)
+**No git or GitHub account required!**
 
-1. Clone this repository to Posit Cloud
-2. Run the setup script:
+1. **Download:** Click the green "Code" button above → "Download ZIP"
+2. **Extract:** Unzip the downloaded file
+3. **Open:** Double-click `16S_tutorials.Rproj` to open in RStudio
+4. **Install packages (one time):** In RStudio Console, run:
    ```r
    source("setup_packages.R")
    ```
-3. Wait 5-10 minutes for packages to install
-4. Open and run `16S_tutorial_revised.Rmd`
+5. **Start tutorial:** Open `16S_tutorial_revised.Rmd` and begin!
 
-### Option 2: Manual Installation
+**See `STUDENT_INSTRUCTIONS.md` for detailed step-by-step guide.**
 
+## For Instructors
+
+### Setup
+
+**One-time setup on your computer:**
 ```r
-# Install CRAN packages
-install.packages(c("tidyverse", "vegan", "ggpubr", "gridExtra"))
-
-# Install Bioconductor packages
-if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-BiocManager::install(c("phyloseq", "DESeq2"))
+# Clone or download this repository
+# Install all packages
+source("setup_packages.R")
 ```
 
-## Usage
+### Sharing with Students
 
-### Posit Cloud (Recommended)
+**Easiest method:** Have students download ZIP (no git needed)
+- Students go to GitHub repo URL
+- Click "Code" → "Download ZIP"
+- Extract and open `.Rproj` file
+- Run `setup_packages.R`
 
-1. Create a new Posit Cloud project from Git Repository
-2. Use URL: `https://github.com/shandley/16S_tutorials`
-3. Create a `data/` subdirectory
-4. Move `16S_mapping.txt` and `16S_tutorial_data.RDS` into `data/`
-5. Run `source("setup_packages.R")` to install packages (one-time only)
-6. Open `16S_tutorial_revised.Rmd`
-7. Knit to HTML or run interactively
+**Alternative:** Institutional RStudio Server
+- See `INSTRUCTOR_SETUP.md` for Posit Cloud setup (not recommended for free tier)
+- Check with your IT department for institutional RStudio Server
 
-### Local Installation
+## File Organization
 
-1. Clone this repository
-2. Update file paths in the tutorial to match your local directory structure
-3. Install required R packages
-4. Open `16S_tutorial_revised.Rmd` in RStudio
-5. Knit to HTML or run interactively
+```
+16S_tutorials/
+├── 16S_tutorial_revised.Rmd        # Main tutorial
+├── 16S_tutorials.Rproj             # RStudio project file
+├── setup_packages.R                # One-time package installation
+├── STUDENT_INSTRUCTIONS.md         # Step-by-step student guide
+├── INSTRUCTOR_SETUP.md             # Instructor setup guide
+├── README.md                       # This file
+└── data/
+    ├── 16S_mapping.txt             # Sample metadata
+    └── 16S_tutorial_data.RDS       # Phyloseq object
+```
 
 ## Data Source
 
