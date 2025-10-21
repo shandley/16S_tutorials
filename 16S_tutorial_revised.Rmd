@@ -69,156 +69,40 @@ We'll analyze the bacterial microbiome across these treatment groups to:
 
 # Setup
 
-## Package Management and Installation
+## Load Required Packages
 
-Before we begin, we need to install and load several R packages. This section teaches you about package management - an important skill for reproducible research.
+This tutorial uses several R packages for microbiome data analysis. These packages have been pre-installed in this Posit Cloud project.
 
 **What are R packages?**
 
-Packages are collections of functions, data, and documentation that extend R's capabilities. For microbiome analysis, we need specialized packages that aren't included with base R.
+Packages extend R's capabilities with specialized functions. For microbiome analysis, we use:
 
-**Two types of packages:**
+- **phyloseq:** Organizes microbiome data (sequences, taxonomy, metadata, phylogeny)
+- **tidyverse:** Data manipulation (dplyr) and visualization (ggplot2)
+- **vegan:** Ecological statistics including PERMANOVA
+- **DESeq2:** Differential abundance testing for count data
+- **ggpubr:** Statistical annotations on plots
+- **gridExtra:** Multi-panel plot layouts
 
-1. **CRAN packages** - General R packages installed with `install.packages()`
-2. **Bioconductor packages** - Specialized biology/genomics packages installed with `BiocManager::install()`
+**Note:** If you're working outside of the shared Posit Cloud project, you'll need to install these packages first. See `setup_packages.R` for installation code.
 
-### Step 1: Install Required Packages
+```{r load-libraries, message=FALSE, warning=FALSE}
+# Load required packages
+# All packages should be pre-installed in this Posit Cloud project
 
-**IMPORTANT:** Run this code chunk ONCE when you first open this tutorial. You do NOT need to run it again in future sessions.
-
-```{r install-packages, eval=FALSE}
-# This chunk has eval=FALSE so it won't run automatically when you knit
-# You need to run it manually the first time
-
-cat("=================================================\n")
-cat("STEP 1: Installing BiocManager\n")
-cat("=================================================\n")
-# BiocManager is needed to install Bioconductor packages
-if (!requireNamespace("BiocManager", quietly = TRUE)) {
-  install.packages("BiocManager")
-  cat("BiocManager installed successfully!\n\n")
-} else {
-  cat("BiocManager already installed.\n\n")
-}
-
-cat("=================================================\n")
-cat("STEP 2: Installing CRAN packages\n")
-cat("=================================================\n")
-# These are general R packages from CRAN
-cran_packages <- c("tidyverse", "vegan", "ggpubr", "gridExtra")
-
-for (pkg in cran_packages) {
-  if (!requireNamespace(pkg, quietly = TRUE)) {
-    cat("Installing:", pkg, "\n")
-    install.packages(pkg)
-  } else {
-    cat("Already installed:", pkg, "\n")
-  }
-}
-
-cat("\n=================================================\n")
-cat("STEP 3: Installing Bioconductor packages\n")
-cat("=================================================\n")
-# These are specialized genomics packages from Bioconductor
-bioc_packages <- c("phyloseq", "DESeq2")
-
-for (pkg in bioc_packages) {
-  if (!requireNamespace(pkg, quietly = TRUE)) {
-    cat("Installing:", pkg, "\n")
-    BiocManager::install(pkg, update = FALSE, ask = FALSE)
-  } else {
-    cat("Already installed:", pkg, "\n")
-  }
-}
-
-cat("\n=================================================\n")
-cat("Installation complete!\n")
-cat("You can now run the next code chunk to load packages.\n")
-cat("=================================================\n")
-```
-
-**What just happened?**
-
-- We installed **BiocManager** (a tool for installing biology packages)
-- We installed **4 CRAN packages** for data analysis and visualization
-- We installed **2 Bioconductor packages** for microbiome analysis
-- Each package only installs if it's not already present
-- This takes 5-10 minutes total
-
-**Installation time:**
-- BiocManager: ~30 seconds
-- CRAN packages: ~3-5 minutes
-- Bioconductor packages: ~3-5 minutes
-- **Total: 5-10 minutes**
-
-### Step 2: Load Packages
-
-**Run this chunk every time** you open the tutorial in a new R session:
-
-```{r load-libraries, message=TRUE}
-# This chunk loads packages that are already installed
-# If a package is missing, you'll get a clear error message
-
-cat("Loading required packages...\n\n")
-
-# Core microbiome analysis (Bioconductor)
 library(phyloseq)
-cat("✓ phyloseq loaded\n")
-
-# Data manipulation and visualization (CRAN)
 library(tidyverse)
-cat("✓ tidyverse loaded\n")
-
-# Statistical testing (CRAN)
 library(vegan)
-cat("✓ vegan loaded\n")
-
 library(ggpubr)
-cat("✓ ggpubr loaded\n")
-
-# Differential abundance testing (Bioconductor)
 library(DESeq2)
-cat("✓ DESeq2 loaded\n")
-
-# Additional plotting (CRAN)
 library(gridExtra)
-cat("✓ gridExtra loaded\n")
-
-cat("\nAll packages loaded successfully!\n")
-cat("You're ready to start the analysis.\n\n")
 
 # Set a random seed for reproducibility
 # This ensures statistical tests give the same results each time
 set.seed(12345)
 ```
 
-### Troubleshooting
-
-**If you get "there is no package called 'X'" error:**
-
-1. Make sure you ran the **install-packages** chunk above
-2. Wait for installation to complete (don't interrupt it)
-3. Try running the **load-libraries** chunk again
-
-**If installation fails:**
-
-Try installing packages one at a time in the Console:
-```r
-# For CRAN packages:
-install.packages("tidyverse")
-
-# For Bioconductor packages:
-BiocManager::install("phyloseq")
-```
-
-### Why These Packages?
-
-- **phyloseq:** Organizes microbiome data (sequences, taxonomy, metadata, phylogeny)
-- **tidyverse:** Modern R tools for data manipulation (dplyr) and visualization (ggplot2)
-- **vegan:** Ecological statistics including PERMANOVA for comparing communities
-- **DESeq2:** Statistical testing for count data (finds differentially abundant bacteria)
-- **ggpubr:** Adds statistical annotations to plots
-- **gridExtra:** Arranges multiple plots into panels
+**Ready to go!** All packages loaded successfully. You can now proceed with the analysis.
 
 ## Understanding the Data Format
 
