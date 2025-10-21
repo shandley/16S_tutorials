@@ -1,0 +1,274 @@
+---
+title: "16S Tutorial"
+author: "Scott A. Handley"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: html_document
+---
+
+# Background
+
+Generalized workflow for processing 16S rRNA gene amplicon data. Each R chunk represents a specific analysis type.
+
+The data originate from a study on the bacterial microbiome of mice treated with or without antibiotics to test the affects of the microbiome on flavivirus infection (https://www.ncbi.nlm.nih.gov/pubmed/29590614). Sequence data was generated from extracted nucleic acid from stool samples collected from individually caged mice and amplified using primers specific for the V4 region using primers 515F/806R.
+
+The study followed flavivirus infection after the following treatments:
+
+1) Koolaid: Antibiotics are provided to the mice via their drinking water. As many of the antibiotics taste bad, koolaid is added as a sweetener. Therefore, the appropriate control is water spike with koolaid.
+2) Ampicillin (Amp): https://en.wikipedia.org/wiki/Ampicillin
+3) Metronidazole (Met): https://en.wikipedia.org/wiki/Metronidazole
+4) Ampicillin + Metronidazole (Amp+Metro)
+
+Treatments was supplied for 2 weeks prior to viral infection and maintained for 2 weeks post-infection. Primary outcome was mouse survival. Each antibiotic treatment group had two subgroups of mice that were either a) left uninfected as controls or b) infected with West Nile Virus via a subcutaneous footpad injection.
+
+## Data organization:
+
+There is no single way to organize your data, but it is good practice to develop a standard for file storage and naming. An well thought out organization structure will make coding your analysis easier, enable you to more easily return to your data after leaving it for a period of time and facilitate publication of your data.
+
+## Data and environment initiation
+
+We will begin by customizing our global settings, activating packages and loading our data into R.
+
+## Load libraries
+
+```{r initiate-environment}
+library("tidyverse")
+library("phyloseq")
+library("gridExtra")
+library("plotly")
+library("ggpubr")
+library("vegan")
+
+```
+
+## Read in your data
+
+The output from a standard dada2 workflow should be an RDS file. In this case the file is called *ps0.rds* (ps is shorthand for PhyloSeq. The 0 indicates it is the 'base' version of the file. As it is modified this can be changed to ps1, ps2, etc.). You may have already merged your mapping file data (sample variables) with the rds file. However, you will likely add or modify this mapping file as you progress, so it is useful to initiate an import/merge of a mapping file at this stage.
+
+```{r initiate-data}
+# Read in an RDS file containing taxonomic and count information
+ps0 <- readRDS(file = "/cloud/project/data/16S_tutorial_data.RDS")
+ps0
+
+# Read in a mapping file containing sample variable information
+map <- import_qiime_sample_data("/cloud/project/data/16S_mapping.txt")
+
+# Merge the RDS file with the mapping file
+ps0 <- merge_phyloseq(ps0, map)
+
+# Perform a few sanity checks
+sample_variables(ps0) # Display variables from the mapping file
+ntaxa(ps0) # Total number of taxa in the entire data
+rank_names(ps0) # Taxonomic ranks
+get_taxa_unique(ps0, "Genus") # Unique phylum names in the file
+
+```
+
+## Sample filtering
+
+```{r sample-filtering}
+# Remove Day -14 cohoused data
+# These samples were collected and sequenced, but were obtained prior to mouse co-housing and thus not included in subsequent analysis
+ps0 <- subset_samples(ps0, treatment_days != "D.14")
+
+# A group of uninfected animals were collected as well, but not analyzed as part of this study
+ps0 <- subset_samples(ps0, virus == "WNV2000")
+
+# Remove taxa no longer part of the count table due to sample removal
+summary(taxa_sums(ps0))
+ps0 <- prune_taxa(taxa_sums(ps0) > 0, ps0)
+summary(taxa_sums(ps0))
+
+```
+
+## ASV summary statistics
+
+```{r sample-removal-identification}
+# Format a data table to combine sample summary data with sample variable data
+ss <- sample_sums(ps0)
+sd <- as.data.frame(sample_data(ps0))
+ss.df <- merge(sd, data.frame("ASV" = ss), by ="row.names")
+
+# Plot the data by the treatment variable
+y = 1000 # Set a threshold for the minimum number of acceptable reads. Can start as a guess
+x = "treatment_days" # Set the x-axis variable you want to examine
+label = "sample" # This is the label you want to overlay on the points that are below threshold y. Should be something sample specific
+
+p.ss.boxplot <- ggplot(ss.df, aes_string(x, y = "ASV", color = "treatment")) + 
+  stat_boxplot(geom = "errorbar", position = position_dodge(width = 0.8)) +
+  geom_boxplot(outlier.colour="NA", position = position_dodge(width = 0.8)) +
+  geom_jitter(size = 2, alpha = 0.6) +
+  scale_y_log10() +
+  facet_wrap(~treatment) +
+  geom_hline(yintercept = y, lty = 2) +
+  geom_text(aes_string(label = label), size = 3, nudge_y = 0.05, nudge_x = 0.05)
+p.ss.boxplot
+
+```
+The example data does have a couple of samples with fewer than 1,000 ASVs. However, these come from samples obtained from antibiotic treated mice, so this fits our expectation. There are a 7 samples in the Amp + Metro treated mice at the later time points that seem to be performing differently (very low numbers of ASV) in comparison to the majority of samples. When questionable samples arise you should take note of them so if there are samples which behave oddly in downstream analysis you can recall this information and perhaps justify their removal. In this case lets remove them. 
+
+```{r sample-outlier-removal}
+nsamples(ps0)
+ps1 <- ps0 %>%
+  subset_samples(
+    sample != "340" &
+    sample != "405" &
+    sample != "402" &
+    sample != "468" &
+    sample != "470" &
+    sample != "535" &
+    sample != "532" &
+    sample != "208" &
+    sample != "275" &
+    sample != "274"
+)
+nsamples(ps1)
+
+```
+
+## Overall sample relationship to evaluate sample outliers
+
+Note that we created a new phyloseq object called ps1. This preserves all of the data in the original ps0 and creates a new data object with the offending sample(s) removed called ps1.
+
+Failure to detect and remove "bad" samples can make interpreting ordinations much more challenging as they typically project as "outliers" severely skewing the rest of the samples. These samples also increase variance and will impede your ability to identify differentially abundant taxa between groups. So sample outlier removal should be a serious and thoughtful part of every analysis in order to obtain optimal results.
+
+## Taxon cleaning 
+
+```{r taxon-cleaning}
+# Begin by removing sequences that were not classified as Bacteria or were classified as either mitochondria or chloroplast
+
+ps1 # Check the number of taxa prior to removal
+ps2 <- ps1 %>%
+  subset_taxa(
+    Kingdom == "Bacteria" &
+    Family  != "mitochondria" &
+    Class   != "Chloroplast" &
+    Phylum != "Cyanobacteria/Chloroplast"
+  )
+ps2 # Confirm that the taxa were removed
+
+# Clean up ram
+rm(ps0)
+rm(ps1)
+
+```
+
+## Community composition plotting
+
+```{r community-composition-plots}
+# Create a data table for ggploting
+ps2_phylum <- ps2 %>%
+  tax_glom(taxrank = "Phylum") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance (or use ps0.ra)
+  psmelt()                                        # Melt to long format for easy ggploting
+
+# Plot - Phylum
+p.ra.phylum <- ggplot(ps2_phylum, aes(x = sample_id, y = Abundance, fill = Phylum)) + 
+  geom_bar(stat = "identity", width = 1) +
+  facet_wrap(treatment~treatment_days, scales = "free_x", nrow = 4, ncol = 7) +
+  theme(axis.text.x = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  labs(title = "Abundant Phylum (> 1%)")
+p.ra.phylum
+
+# Draw in interactive plotly plot
+ggplotly(p.ra.phylum)
+
+```
+
+## Data transformation
+
+Many analysis in community ecology and hypothesis testing benefit from data transformation. Many microbiome data sets do not fit to a normal distribution, but transforming them towards normality may enable more appropriate data for specific statistical tests. The choice of transformation is not straight forward. There is literature on how frequently used transformations affect certain analysis, but every data set may require different considerations. Therefore, it is recommended that you examine the effects of several transformations on your data and explore how they alter your results and interpretation.
+
+The R chunk below implements several commonly used transformations in microbiome research and plots their results. Similar to outlier removal and prevalence filtering, your choice should be justified, tested and documented.
+
+```{r data-transform, include=FALSE}
+# Transform to Relative abundances
+ps2.ra <- transform_sample_counts(ps2, function(OTU) OTU/sum(OTU))
+
+```
+
+## Phyla level plots
+
+```{r phyla-level-plots-preparation}
+# agglomerate taxa
+glom <- tax_glom(ps2.ra, taxrank = 'Phylum')
+
+# create dataframe from phyloseq object
+dat <- as.data.frame(psmelt(glom))
+
+# Reorder Phylum levels from most -> least abundant
+dat$Phylum <- factor(dat$Phylum, levels = c("Bacteroidetes", "Firmicutes", "Proteobacteria", "Tenericutes", "Actinobacteria", "Verrucomicrobia"))
+levels(dat$Phylum)
+
+# Reduced to most abundant phylum
+dat %>%
+  group_by(Phylum) %>%
+  summarise(Mean = mean(Abundance)) %>%
+  arrange(desc(Mean))
+
+# Select 4 most abundant Phyla
+dat.1 <- filter(dat, Phylum %in% c("Bacteroidetes", "Firmicutes", "Proteobacteria", "Verrucomicrobia"))
+levels(dat.1$Phylum)
+dat.1 <- droplevels(dat.1)
+levels(dat.1$Phylum)
+
+```
+
+```{r phyla-level-plotting}
+# Phyla plots with GAM smoother 
+p.gam.phylum <- ggplot(dat.1, aes(x = treatment_days, y = Abundance, color = Phylum, group = Phylum)) +
+  stat_smooth(method = "loess") +
+  facet_grid(~treatment) +
+  ylab("Relative Abundance") +
+  geom_point(size = 1.25, alpha = 0.4)
+p.gam.phylum
+
+```
+
+## Alpha diversity plotting
+
+```{r alpha-diverstiy-GAM-plots}
+alpha.div <- estimate_richness(ps2, measures = c("Observed", "Shannon"))
+sd.1 <- as.data.frame(sample_data(ps2)) # Can not use original sd as samples have been removed
+ps2.rich <- cbind(sd.1, alpha.div) # Bind alpha diversity columns to sample data
+
+# Richness
+p.rich <- ggplot(ps2.rich, aes(x = treatment_days, y = Observed, color = treatment, group = treatment)) +
+  stat_smooth(method = "loess") +
+  labs(y = "Richness", color = "Treatment") +
+  geom_jitter(size = 2, alpha = 0.5, width = 0.2) +
+  scale_color_manual(values = c("black", "chocolate", "green", "purple"))
+
+# Shannon diversity
+p.sd <- ggplot(ps2.rich, aes(x = treatment_days, y = Observed, color = treatment, group = treatment)) +
+  stat_smooth(method = "loess") +
+  labs(y = "Richness", color = "Treatment") +
+  geom_jitter(size = 2, alpha = 0.5, width = 0.2) +
+  scale_color_manual(values = c("black", "chocolate", "green", "purple"))
+
+ggarrange(p.rich, p.sd, ncol = 2, labels = c("A)", "B)"))
+
+```
+
+## Ordination
+
+```{r ordination}
+#Ordination Analysis
+ord.pcoa.uni <- ordinate(ps2, method = "PCoA", distance = "unifrac")
+
+```
+
+## Beta diversity ordination plots ~ SurvivalStatus
+
+```{r ordination-plots}
+## Ordination plots all samples
+# Unifrac
+p.pcoa.uni <- plot_ordination(ps2, ord.pcoa.uni, color = "treatment", axes = c(1,2)) +
+  geom_point(size = 2) +
+  labs(title = "PCoA of UniFrac Distances", color = "Treatment") +
+  facet_grid(~treatment_days) +
+  stat_ellipse(type = "norm", geom = "polygon", alpha = 1/10, aes(fill = treatment))
+p.pcoa.uni
+
+```
+

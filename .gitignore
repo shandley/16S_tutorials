@@ -1,0 +1,23 @@
+# R and RStudio files
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# RMarkdown output
+*.html
+*.pdf
+*_cache/
+*_files/
+
+# MacOS
+.DS_Store
+
+# Temporary files
+*~
+*.swp
+*.swo
+
+# Log files
+*.log

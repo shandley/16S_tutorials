@@ -1,0 +1,1099 @@
+---
+title: "How the Gut Microbiome Influences Viral Infection Outcomes"
+subtitle: "A 16S rRNA Gene Amplicon Analysis Tutorial"
+author: "Scott A. Handley"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 6)
+```
+
+# Learning Objectives
+
+By the end of this tutorial, you will be able to:
+
+1. **Explore** a 16S rRNA amplicon dataset using the phyloseq package
+2. **Assess** data quality and make informed decisions about sample/taxon filtering
+3. **Visualize** microbial community composition across experimental groups
+4. **Calculate and interpret** alpha diversity metrics (richness and evenness)
+5. **Perform and interpret** beta diversity analysis using ordination and PERMANOVA
+6. **Identify** differentially abundant taxa between treatment groups
+7. **Connect** microbiome patterns to biological outcomes (survival)
+
+**Time to complete:** 60-90 minutes
+
+---
+
+# The Biological Question
+
+## Background
+
+Can altering the gut microbiome with antibiotics change how well mice survive viral infection?
+
+This tutorial uses real data from a published study ([Thackray et al. 2018](https://www.ncbi.nlm.nih.gov/pubmed/29590614)) that tested how different antibiotics affect West Nile Virus (WNV) infection outcomes in mice. The researchers wanted to know:
+
+> **Does the composition of the gut bacterial community influence susceptibility to viral infection?**
+
+## Experimental Design
+
+- **Hosts:** Mice housed individually in cages
+- **Treatments:** 4 groups receiving different antibiotics in drinking water for 2 weeks before infection
+  - **Vehicle (Control):** Koolaid-flavored water only
+  - **Ampicillin (Amp):** Targets Gram-positive bacteria
+  - **Metronidazole (Metro):** Targets anaerobic bacteria
+  - **Amp+Metro:** Combination therapy
+
+- **Infection:** West Nile Virus (WNV) via footpad injection
+- **Sampling:** Stool samples collected at multiple timepoints (Day -14 through Day 20)
+- **Sequencing:** 16S rRNA V4 region (515F/806R primers)
+- **Primary Outcome:** Mouse survival (Dead/Alive)
+
+## What We'll Discover
+
+We'll analyze the bacterial microbiome across these treatment groups to:
+1. See how antibiotics reshape microbial communities
+2. Understand which bacterial groups are affected
+3. Connect microbiome patterns to survival outcomes
+
+**Spoiler Alert:** The results revealed surprising insights about which antibiotics were protective and why!
+
+---
+
+# Setup
+
+## Load Required Packages
+
+```{r load-libraries}
+# Core microbiome analysis
+library(phyloseq)
+
+# Data manipulation and visualization
+library(tidyverse)
+
+# Statistical testing
+library(vegan)        # For PERMANOVA and ecological statistics
+library(ggpubr)       # For adding statistics to plots
+
+# Differential abundance testing
+library(DESeq2)       # For identifying differentially abundant taxa
+
+# Additional plotting
+library(gridExtra)    # For arranging multiple plots
+
+# Set a random seed for reproducibility
+set.seed(12345)
+```
+
+## Understanding the Data Format
+
+The data are stored in a **phyloseq object**, which bundles together:
+
+- **OTU/ASV table:** Counts of each bacterial sequence variant in each sample
+- **Taxonomy table:** Kingdom through Species classifications
+- **Sample metadata:** Treatment groups, timepoints, outcomes
+- **Phylogenetic tree:** Evolutionary relationships between sequences
+
+This format keeps everything organized and connected!
+
+---
+
+# Part 1: Data Exploration
+
+## Load the Data
+
+```{r load-data}
+# Read the phyloseq object containing sequence counts and taxonomy
+ps0 <- readRDS(file = "/cloud/project/data/16S_tutorial_data.RDS")
+
+# Read the sample metadata (mapping file)
+map <- import_qiime_sample_data("/cloud/project/data/16S_mapping.txt")
+
+# Merge them together
+ps0 <- merge_phyloseq(ps0, map)
+
+# Display summary
+ps0
+```
+
+## Explore the Dataset Structure
+
+Let's understand what we're working with:
+
+```{r explore-structure}
+# What sample variables (metadata) do we have?
+cat("Sample Variables:\n")
+sample_variables(ps0)
+
+# How many samples and taxa?
+cat("\nDataset Dimensions:\n")
+cat("Number of samples:", nsamples(ps0), "\n")
+cat("Number of ASVs (unique bacterial sequences):", ntaxa(ps0), "\n")
+
+# What taxonomic ranks are available?
+cat("\nTaxonomic Ranks:\n")
+rank_names(ps0)
+
+# Quick look at sample metadata
+cat("\nFirst few rows of metadata:\n")
+head(sample_data(ps0))
+```
+
+**Pause and Think:**
+- How many different treatment groups do you see?
+- What timepoints were sampled?
+- What are the two virus categories?
+
+## Examine Sample Metadata
+
+```{r examine-metadata}
+# Create a dataframe from sample data for easier viewing
+sample_df <- as.data.frame(sample_data(ps0))
+
+# How many samples per treatment?
+cat("Samples per Treatment Group:\n")
+table(sample_df$treatment)
+
+# How many samples per timepoint?
+cat("\nSamples per Timepoint:\n")
+table(sample_df$treatment_days)
+
+# How many infected vs uninfected?
+cat("\nSamples per Virus Status:\n")
+table(sample_df$virus)
+
+# Survival outcomes
+cat("\nSurvival Status:\n")
+table(sample_df$survival_status)
+
+# Cross-tabulation: Treatment vs Survival (for infected animals)
+cat("\nTreatment vs Survival (All samples):\n")
+table(sample_df$treatment, sample_df$survival_status)
+```
+
+**Interpretation:** Take a moment to notice the sample sizes. Are they balanced across groups?
+
+## Check Sequencing Depth
+
+```{r sequencing-depth}
+# Calculate reads per sample
+read_depth <- sample_sums(ps0)
+
+# Summary statistics
+cat("Sequencing Depth Summary:\n")
+summary(read_depth)
+
+# Visualize distribution
+read_depth_df <- data.frame(
+  sample_id = names(read_depth),
+  reads = read_depth
+) %>%
+  left_join(sample_df, by = "sample_id")
+
+ggplot(read_depth_df, aes(x = treatment, y = reads, fill = treatment)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.5, size = 1.5) +
+  scale_y_log10(labels = scales::comma) +
+  labs(
+    title = "Sequencing Depth per Sample",
+    x = "Treatment Group",
+    y = "Number of Reads (log10 scale)",
+    caption = "Each dot represents one sample"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+**Question for you:** Do any samples have unusually low read counts? What might cause this?
+
+## Preview Taxonomic Composition
+
+```{r preview-taxa}
+# How many phyla are present?
+cat("Number of Bacterial Phyla:",
+    length(unique(as.data.frame(tax_table(ps0))$Phylum)), "\n")
+
+# What are the unique phyla?
+cat("\nPhyla detected:\n")
+unique(as.data.frame(tax_table(ps0))$Phylum) %>%
+  na.omit() %>%
+  sort()
+
+# Quick look at taxonomy table structure
+cat("\nFirst few rows of taxonomy:\n")
+head(tax_table(ps0))
+```
+
+---
+
+# Part 2: Data Quality and Cleaning
+
+## Focus the Analysis
+
+For this tutorial, we'll focus on **infected animals only** to understand how the microbiome influences viral infection outcomes. We'll also remove the early timepoint (Day -14) which was before mice were individually housed.
+
+```{r filter-samples}
+# Starting sample count
+cat("Starting samples:", nsamples(ps0), "\n")
+
+# Remove Day -14 (pre-housing samples)
+ps1 <- subset_samples(ps0, treatment_days != "D.14")
+cat("After removing Day -14:", nsamples(ps1), "\n")
+
+# Keep only WNV-infected animals
+ps1 <- subset_samples(ps1, virus == "WNV2000")
+cat("After filtering to WNV-infected only:", nsamples(ps1), "\n")
+
+# Remove ASVs that are no longer present after sample filtering
+ps1 <- prune_taxa(taxa_sums(ps1) > 0, ps1)
+cat("ASVs remaining:", ntaxa(ps1), "\n")
+```
+
+## Identify Low-Quality Samples
+
+Rather than blindly removing samples, let's **learn to identify** problematic ones:
+
+```{r quality-assessment}
+# Create a dataframe with read counts and metadata
+sample_summary <- data.frame(
+  sample_id = sample_names(ps1),
+  read_count = sample_sums(ps1)
+) %>%
+  left_join(as.data.frame(sample_data(ps1)), by = "sample_id")
+
+# Visualize by treatment and timepoint
+p_quality <- ggplot(sample_summary,
+                    aes(x = treatment_days, y = read_count, color = treatment)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.6, size = 2) +
+  facet_wrap(~treatment, nrow = 1) +
+  scale_y_log10(labels = scales::comma) +
+  geom_hline(yintercept = 1000, linetype = "dashed", color = "red") +
+  labs(
+    title = "Sample Quality Assessment: Read Counts Over Time",
+    subtitle = "Red line indicates potential quality threshold (1,000 reads)",
+    x = "Days Post-Infection",
+    y = "Number of Reads (log10)",
+    caption = "Lower read counts in antibiotic-treated samples may reflect depleted communities"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p_quality)
+
+# Flag very low samples
+low_samples <- sample_summary %>%
+  filter(read_count < 1000) %>%
+  select(sample_id, sample, treatment, treatment_days, read_count, survival_status)
+
+cat("\nSamples with <1,000 reads:\n")
+print(low_samples)
+```
+
+**Think about it:**
+- Most low-read samples are in Amp+Metro group. Why might combined antibiotics cause this?
+- Should we remove these samples, or are they biologically meaningful?
+- *Decision:* These represent real biological effects (microbiome depletion), so we'll keep them!
+
+## Clean Unwanted Taxa
+
+Remove sequences that aren't bacteria or are contaminants (mitochondria, chloroplasts):
+
+```{r clean-taxa}
+# Check for non-bacterial sequences
+tax_df <- as.data.frame(tax_table(ps1))
+cat("Kingdom-level composition:\n")
+table(tax_df$Kingdom, useNA = "ifany")
+
+cat("\nFamily-level check for mitochondria:\n")
+table(tax_df$Family == "mitochondria", useNA = "ifany")
+
+cat("\nClass-level check for chloroplast:\n")
+table(tax_df$Class == "Chloroplast", useNA = "ifany")
+
+# Remove unwanted taxa
+cat("\nBefore filtering:", ntaxa(ps1), "ASVs\n")
+
+ps2 <- ps1 %>%
+  subset_taxa(
+    Kingdom == "Bacteria" &
+    Family != "mitochondria" &
+    Class != "Chloroplast"
+  )
+
+cat("After filtering:", ntaxa(ps2), "ASVs\n\n")
+
+# Clean up
+rm(ps0, ps1)
+```
+
+---
+
+# CHECKPOINT 1: What Have We Learned?
+
+**Take a moment to reflect:**
+
+1. We have **`r nsamples(ps2)` samples** from WNV-infected mice across 4 treatment groups
+2. Samples were collected at **8 timepoints** (D0 through D20)
+3. We kept **`r ntaxa(ps2)` bacterial ASVs** after quality filtering
+4. Antibiotic-treated samples (especially Amp+Metro) have **fewer reads**, reflecting depleted microbiomes
+5. This is **real biology**, not technical failure!
+
+**Biological insight:** Antibiotics are working! They're depleting the gut bacteria.
+
+---
+
+# Part 3: Alpha Diversity - Community Richness and Evenness
+
+## What is Alpha Diversity?
+
+**Alpha diversity** measures the diversity *within* individual samples:
+
+- **Richness:** How many different bacteria are present? (count)
+- **Shannon Diversity:** Accounts for both richness AND evenness (distribution)
+  - High Shannon = many species, evenly distributed
+  - Low Shannon = few species, or dominated by a few
+
+**Hypothesis:** Antibiotics should *reduce* microbial diversity.
+
+## Calculate Alpha Diversity
+
+```{r calculate-alpha}
+# Calculate multiple metrics
+alpha_div <- estimate_richness(ps2, measures = c("Observed", "Shannon"))
+
+# Combine with sample metadata
+alpha_df <- alpha_div %>%
+  rownames_to_column("sample_id") %>%
+  left_join(as.data.frame(sample_data(ps2)), by = "sample_id")
+
+# Preview
+head(alpha_df)
+```
+
+## Visualize Alpha Diversity
+
+```{r plot-alpha}
+# Richness over time
+p_richness <- ggplot(alpha_df,
+                     aes(x = treatment_days, y = Observed,
+                         color = treatment, group = treatment)) +
+  stat_summary(fun = mean, geom = "line", size = 1.2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2) +
+  geom_jitter(alpha = 0.4, width = 0.15, size = 1.5) +
+  labs(
+    title = "Species Richness Over Time",
+    x = "Days Post-Infection",
+    y = "Observed ASVs (Richness)",
+    color = "Treatment"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Shannon diversity over time
+p_shannon <- ggplot(alpha_df,
+                    aes(x = treatment_days, y = Shannon,
+                        color = treatment, group = treatment)) +
+  stat_summary(fun = mean, geom = "line", size = 1.2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2) +
+  geom_jitter(alpha = 0.4, width = 0.15, size = 1.5) +
+  labs(
+    title = "Shannon Diversity Over Time",
+    x = "Days Post-Infection",
+    y = "Shannon Diversity Index",
+    color = "Treatment"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Display side by side
+gridExtra::grid.arrange(p_richness, p_shannon, ncol = 2)
+```
+
+**Observations:**
+- Which treatment has the **lowest** diversity?
+- Does diversity change over time?
+- Are richness and Shannon telling the same story?
+
+## Statistical Testing
+
+Let's test if treatments differ statistically at **Day 7** (mid-infection):
+
+```{r alpha-stats}
+# Filter to Day 7
+alpha_d7 <- alpha_df %>% filter(treatment_days == "D7")
+
+# Kruskal-Wallis test (non-parametric ANOVA)
+kw_richness <- kruskal.test(Observed ~ treatment, data = alpha_d7)
+kw_shannon <- kruskal.test(Shannon ~ treatment, data = alpha_d7)
+
+cat("Kruskal-Wallis Test Results at Day 7:\n\n")
+cat("Richness:\n")
+print(kw_richness)
+cat("\nShannon Diversity:\n")
+print(kw_shannon)
+
+# If significant, do pairwise comparisons
+if(kw_shannon$p.value < 0.05) {
+  cat("\nPairwise comparisons (Wilcoxon tests with Bonferroni correction):\n")
+  pairwise_result <- pairwise.wilcox.test(alpha_d7$Shannon,
+                                          alpha_d7$treatment,
+                                          p.adjust.method = "bonferroni")
+  print(pairwise_result)
+}
+
+# Visualization with statistics
+p_shannon_d7 <- ggplot(alpha_d7, aes(x = treatment, y = Shannon, fill = treatment)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.6) +
+  stat_compare_means(method = "kruskal.test", label.y = max(alpha_d7$Shannon) * 1.1) +
+  labs(
+    title = "Shannon Diversity at Day 7 Post-Infection",
+    subtitle = paste("Kruskal-Wallis p-value:",
+                     format.pval(kw_shannon$p.value, digits = 3)),
+    x = "Treatment",
+    y = "Shannon Diversity"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+print(p_shannon_d7)
+```
+
+**Interpretation:**
+- If p < 0.05, treatments significantly affect diversity
+- Which treatment differs most from Vehicle control?
+- Does this match your expectations?
+
+---
+
+# Part 4: Beta Diversity - Community Composition Differences
+
+## What is Beta Diversity?
+
+**Beta diversity** measures how different communities are *between* samples:
+
+- Are antibiotic-treated mice more similar to each other than to controls?
+- How does the microbiome change over time?
+- Can we predict treatment group from microbiome composition?
+
+We'll use **UniFrac distance**, which accounts for evolutionary relationships between bacteria.
+
+## Ordination Analysis
+
+**Ordination** projects high-dimensional data (thousands of bacteria) into 2D space for visualization.
+
+```{r beta-ordination}
+# Calculate UniFrac distances (uses phylogenetic tree)
+ord_unifrac <- ordinate(ps2, method = "PCoA", distance = "unifrac")
+
+# How much variation does each axis explain?
+cat("Variance explained by each axis:\n")
+eigenvalues <- ord_unifrac$values$Eigenvalues
+variance_explained <- eigenvalues / sum(eigenvalues) * 100
+cat("PC1:", round(variance_explained[1], 1), "%\n")
+cat("PC2:", round(variance_explained[2], 1), "%\n")
+
+# Plot by treatment
+p_beta_treatment <- plot_ordination(ps2, ord_unifrac,
+                                   color = "treatment",
+                                   shape = "treatment") +
+  geom_point(size = 3, alpha = 0.7) +
+  stat_ellipse(type = "norm", linetype = 2) +
+  labs(
+    title = "Beta Diversity: UniFrac PCoA",
+    subtitle = "Each point = one sample; ellipses = 95% confidence",
+    x = paste0("PC1 (", round(variance_explained[1], 1), "%)"),
+    y = paste0("PC2 (", round(variance_explained[2], 1), "%)")
+  ) +
+  theme_bw()
+
+print(p_beta_treatment)
+
+# Plot by timepoint
+p_beta_time <- plot_ordination(ps2, ord_unifrac,
+                              color = "treatment_days") +
+  geom_point(size = 3, alpha = 0.7) +
+  labs(
+    title = "Beta Diversity: UniFrac PCoA Colored by Timepoint",
+    x = paste0("PC1 (", round(variance_explained[1], 1), "%)"),
+    y = paste0("PC2 (", round(variance_explained[2], 1), "%)"),
+    color = "Day Post-Infection"
+  ) +
+  theme_bw()
+
+print(p_beta_time)
+
+# Faceted view
+p_beta_facet <- plot_ordination(ps2, ord_unifrac,
+                               color = "treatment") +
+  geom_point(size = 2, alpha = 0.7) +
+  facet_wrap(~treatment_days, nrow = 2) +
+  labs(
+    title = "Beta Diversity Over Time by Treatment",
+    x = paste0("PC1 (", round(variance_explained[1], 1), "%)"),
+    y = paste0("PC2 (", round(variance_explained[2], 1), "%)")
+  ) +
+  theme_bw()
+
+print(p_beta_facet)
+```
+
+**What do you see?**
+- Are treatment groups separated in ordination space?
+- Which axis (PC1 or PC2) best separates treatments?
+- How do communities change over time?
+
+## PERMANOVA - Statistical Testing
+
+**PERMANOVA** tests if group centroids differ significantly (like ANOVA for multivariate data).
+
+```{r permanova}
+# Extract sample data and distance matrix
+sampledf <- as.data.frame(sample_data(ps2))
+unifrac_dist <- phyloseq::distance(ps2, method = "unifrac")
+
+# Test: Does treatment affect community composition?
+set.seed(12345)
+permanova_treatment <- adonis2(unifrac_dist ~ treatment,
+                               data = sampledf,
+                               permutations = 999)
+cat("PERMANOVA: Effect of Treatment\n")
+print(permanova_treatment)
+
+# Test: What about timepoint?
+permanova_time <- adonis2(unifrac_dist ~ treatment_days,
+                         data = sampledf,
+                         permutations = 999)
+cat("\nPERMANOVA: Effect of Timepoint\n")
+print(permanova_time)
+
+# Combined model: Treatment + Time
+permanova_both <- adonis2(unifrac_dist ~ treatment + treatment_days,
+                         data = sampledf,
+                         permutations = 999)
+cat("\nPERMANOVA: Combined Model\n")
+print(permanova_both)
+
+# Pairwise comparisons between treatments
+# (Using Day 7 as example)
+ps2_d7 <- subset_samples(ps2, treatment_days == "D7")
+sampledf_d7 <- as.data.frame(sample_data(ps2_d7))
+unifrac_dist_d7 <- phyloseq::distance(ps2_d7, method = "unifrac")
+
+set.seed(12345)
+permanova_d7 <- adonis2(unifrac_dist_d7 ~ treatment,
+                        data = sampledf_d7,
+                        permutations = 999)
+cat("\nPERMANOVA at Day 7 Only:\n")
+print(permanova_d7)
+```
+
+**Interpretation:**
+- **R²** tells you how much variation is explained
+- **p-value < 0.05** means groups differ significantly
+- What explains more variation: treatment or time?
+
+---
+
+# Part 5: Community Composition - Who's There?
+
+## Phylum-Level Composition
+
+Let's see which bacterial phyla dominate each treatment:
+
+```{r phylum-composition}
+# Transform to relative abundance
+ps2_ra <- transform_sample_counts(ps2, function(x) x / sum(x))
+
+# Agglomerate to phylum level
+ps2_phylum <- tax_glom(ps2_ra, taxrank = "Phylum")
+
+# Convert to dataframe for plotting
+phylum_df <- psmelt(ps2_phylum)
+
+# Get mean abundance per phylum to order legend
+phylum_order <- phylum_df %>%
+  group_by(Phylum) %>%
+  summarise(mean_ab = mean(Abundance)) %>%
+  arrange(desc(mean_ab)) %>%
+  pull(Phylum)
+
+phylum_df$Phylum <- factor(phylum_df$Phylum, levels = phylum_order)
+
+# Stacked bar plot
+p_phylum_bars <- ggplot(phylum_df,
+                        aes(x = sample_id, y = Abundance, fill = Phylum)) +
+  geom_bar(stat = "identity", width = 1) +
+  facet_grid(treatment ~ treatment_days,
+             scales = "free_x",
+             space = "free_x") +
+  labs(
+    title = "Phylum-Level Community Composition",
+    subtitle = "Each vertical bar = one sample",
+    y = "Relative Abundance",
+    x = NULL
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    strip.text.x = element_text(angle = 0)
+  ) +
+  scale_fill_brewer(palette = "Set3")
+
+print(p_phylum_bars)
+```
+
+**Observations:**
+- Which phyla dominate control (Vehicle) mice?
+- How does Amp+Metro affect phylum composition?
+- Are there phyla that increase with treatment?
+
+## Phylum Dynamics Over Time
+
+```{r phylum-dynamics}
+# Focus on most abundant phyla
+top_phyla <- phylum_df %>%
+  group_by(Phylum) %>%
+  summarise(mean_ab = mean(Abundance)) %>%
+  filter(mean_ab > 0.01) %>%
+  pull(Phylum)
+
+phylum_dynamics <- phylum_df %>%
+  filter(Phylum %in% top_phyla) %>%
+  group_by(treatment, treatment_days, Phylum) %>%
+  summarise(
+    mean_abundance = mean(Abundance),
+    se_abundance = sd(Abundance) / sqrt(n()),
+    .groups = "drop"
+  )
+
+# Plot dynamics
+p_phylum_time <- ggplot(phylum_dynamics,
+                        aes(x = treatment_days, y = mean_abundance,
+                            color = Phylum, group = Phylum)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_abundance - se_abundance,
+                    ymax = mean_abundance + se_abundance),
+                width = 0.2) +
+  facet_wrap(~treatment, nrow = 1) +
+  labs(
+    title = "Phylum Abundance Dynamics Over Time",
+    x = "Days Post-Infection",
+    y = "Mean Relative Abundance",
+    color = "Phylum"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p_phylum_time)
+```
+
+---
+
+# Part 6: Differential Abundance Testing
+
+## Which Specific Bacteria Differ Between Treatments?
+
+We'll use **DESeq2** to identify ASVs that are significantly more/less abundant in different treatments. This is like a t-test, but designed for count data.
+
+**Comparison:** Vehicle (control) vs. Amp+Metro at Day 7 (peak infection)
+
+```{r deseq2-setup}
+# Subset to Day 7 and relevant treatments
+ps_deseq <- ps2 %>%
+  subset_samples(treatment_days == "D7") %>%
+  subset_samples(treatment %in% c("Vehicle", "AmpMetro"))
+
+# Remove ASVs not present in these samples
+ps_deseq <- prune_taxa(taxa_sums(ps_deseq) > 0, ps_deseq)
+
+# DESeq2 requires sample data as a dataframe
+sample_data(ps_deseq)$treatment <- factor(sample_data(ps_deseq)$treatment,
+                                          levels = c("Vehicle", "AmpMetro"))
+
+cat("Comparing:", nsamples(ps_deseq), "samples\n")
+cat("Vehicle:", sum(sample_data(ps_deseq)$treatment == "Vehicle"), "samples\n")
+cat("AmpMetro:", sum(sample_data(ps_deseq)$treatment == "AmpMetro"), "samples\n")
+cat("Testing:", ntaxa(ps_deseq), "ASVs\n")
+```
+
+```{r deseq2-analysis}
+# Convert to DESeq2 format
+deseq_obj <- phyloseq_to_deseq2(ps_deseq, ~ treatment)
+
+# Run DESeq2 analysis
+deseq_obj <- DESeq(deseq_obj, test = "Wald", fitType = "local")
+
+# Extract results
+# Positive log2FoldChange = higher in AmpMetro
+# Negative log2FoldChange = higher in Vehicle
+res <- results(deseq_obj, contrast = c("treatment", "AmpMetro", "Vehicle"))
+
+# Add taxonomy
+res_df <- as.data.frame(res) %>%
+  rownames_to_column("ASV") %>%
+  left_join(
+    as.data.frame(tax_table(ps_deseq)) %>% rownames_to_column("ASV"),
+    by = "ASV"
+  ) %>%
+  arrange(padj, desc(abs(log2FoldChange)))
+
+# Summary
+cat("\nDifferential Abundance Summary:\n")
+cat("Total ASVs tested:", nrow(res_df), "\n")
+cat("Significant at padj < 0.05:", sum(res_df$padj < 0.05, na.rm = TRUE), "\n")
+cat("Enriched in AmpMetro:",
+    sum(res_df$log2FoldChange > 0 & res_df$padj < 0.05, na.rm = TRUE), "\n")
+cat("Enriched in Vehicle:",
+    sum(res_df$log2FoldChange < 0 & res_df$padj < 0.05, na.rm = TRUE), "\n")
+
+# Show top results
+cat("\nTop 15 Differentially Abundant ASVs:\n")
+res_top <- res_df %>%
+  filter(!is.na(padj)) %>%
+  head(15) %>%
+  select(Phylum, Class, Family, Genus, log2FoldChange, padj)
+
+print(res_top)
+```
+
+## Visualize Differential Abundance
+
+```{r deseq2-volcano}
+# Volcano plot
+res_df <- res_df %>%
+  mutate(
+    significance = case_when(
+      is.na(padj) ~ "Not significant",
+      padj >= 0.05 ~ "Not significant",
+      log2FoldChange > 0 ~ "Enriched in AmpMetro",
+      log2FoldChange < 0 ~ "Enriched in Vehicle"
+    )
+  )
+
+p_volcano <- ggplot(res_df,
+                    aes(x = log2FoldChange, y = -log10(padj),
+                        color = significance)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "gray50") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "gray50") +
+  scale_color_manual(values = c(
+    "Enriched in AmpMetro" = "#E41A1C",
+    "Enriched in Vehicle" = "#377EB8",
+    "Not significant" = "gray70"
+  )) +
+  labs(
+    title = "Differential Abundance: Vehicle vs Amp+Metro at Day 7",
+    subtitle = "Each point = one ASV",
+    x = "Log2 Fold Change (AmpMetro / Vehicle)",
+    y = "-Log10(Adjusted P-value)",
+    color = "Significance"
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+print(p_volcano)
+```
+
+## Top Differentially Abundant Taxa
+
+```{r top-taxa-barplot}
+# Get top 20 most significant ASVs
+top_asvs <- res_df %>%
+  filter(!is.na(padj), padj < 0.05) %>%
+  arrange(padj) %>%
+  head(20) %>%
+  pull(ASV)
+
+if(length(top_asvs) > 0) {
+  # Subset phyloseq to these ASVs
+  ps_top <- prune_taxa(top_asvs, ps_deseq)
+  ps_top_ra <- transform_sample_counts(ps_top, function(x) x / sum(x))
+
+  # Melt for plotting
+  top_df <- psmelt(ps_top_ra) %>%
+    mutate(taxa_label = paste(Family, Genus, sep = " - "))
+
+  # Plot abundance by treatment
+  p_top_taxa <- ggplot(top_df,
+                       aes(x = treatment, y = Abundance, fill = treatment)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+    geom_jitter(width = 0.2, alpha = 0.5, size = 1.5) +
+    facet_wrap(~taxa_label, scales = "free_y", ncol = 4) +
+    labs(
+      title = "Top 20 Differentially Abundant ASVs",
+      subtitle = "Day 7 Post-Infection",
+      x = "Treatment",
+      y = "Relative Abundance"
+    ) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none",
+      strip.text = element_text(size = 7)
+    )
+
+  print(p_top_taxa)
+} else {
+  cat("No significantly different ASVs found at padj < 0.05\n")
+}
+```
+
+**Interpretation:**
+- Which bacterial families/genera are depleted by Amp+Metro?
+- Are any bacteria *enriched* by antibiotics? (These might be antibiotic-resistant!)
+- How does this connect to mouse survival?
+
+---
+
+# CHECKPOINT 2: Connecting the Pieces
+
+**What we've discovered:**
+
+1. **Alpha diversity:** Amp+Metro drastically reduces bacterial diversity
+2. **Beta diversity:** Antibiotic treatments create distinct microbial communities
+3. **Composition:** Certain phyla (like Bacteroidetes, Firmicutes) are depleted
+4. **Specific taxa:** We identified exact ASVs that differ between treatments
+5. **Biological link:** These microbiome changes correlate with survival differences
+
+**The Big Picture Question:**
+Do the microbiome changes *cause* differences in viral infection outcomes, or are they just correlated?
+
+*(The original paper did fecal transplant experiments to test causality!)*
+
+---
+
+# Part 7: Connecting to Survival Outcomes
+
+## Microbiome Diversity and Survival
+
+Let's explore if microbiome diversity predicts survival:
+
+```{r diversity-survival}
+# Focus on Day 0 (baseline, before disease progression)
+alpha_survival <- alpha_df %>%
+  filter(treatment_days == "D0") %>%
+  mutate(survival_status = factor(survival_status, levels = c("Alive", "Dead")))
+
+# Plot Shannon diversity by survival
+p_survival <- ggplot(alpha_survival,
+                     aes(x = treatment, y = Shannon, fill = survival_status)) +
+  geom_boxplot(alpha = 0.7, position = position_dodge(0.8)) +
+  geom_point(aes(color = survival_status),
+             position = position_jitterdodge(dodge.width = 0.8, jitter.width = 0.1),
+             size = 2, alpha = 0.6) +
+  labs(
+    title = "Baseline Microbiome Diversity and Survival Outcome",
+    subtitle = "Day 0 (pre-symptomatic)",
+    x = "Treatment",
+    y = "Shannon Diversity",
+    fill = "Outcome",
+    color = "Outcome"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p_survival)
+
+# Statistical test
+cat("\nWilcoxon test: Shannon diversity vs Survival at Day 0\n")
+for(trt in unique(alpha_survival$treatment)) {
+  subset_data <- alpha_survival %>% filter(treatment == trt)
+  if(sum(subset_data$survival_status == "Alive") > 0 &
+     sum(subset_data$survival_status == "Dead") > 0) {
+    test_result <- wilcox.test(Shannon ~ survival_status, data = subset_data)
+    cat(trt, "p-value:", format.pval(test_result$p.value, digits = 3), "\n")
+  }
+}
+```
+
+## Treatment Effects on Survival
+
+```{r treatment-survival}
+# Calculate survival rates
+survival_summary <- as.data.frame(sample_data(ps2)) %>%
+  group_by(treatment, survival_status) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(treatment) %>%
+  mutate(
+    total = sum(n),
+    proportion = n / total
+  ) %>%
+  filter(survival_status == "Alive")
+
+# Bar plot
+p_survival_rate <- ggplot(survival_summary,
+                          aes(x = treatment, y = proportion, fill = treatment)) +
+  geom_col(alpha = 0.8) +
+  geom_text(aes(label = paste0(round(proportion * 100, 1), "%")),
+            vjust = -0.5, size = 5) +
+  ylim(0, 1) +
+  labs(
+    title = "Survival Rate by Treatment Group",
+    subtitle = paste("Total n =", nsamples(ps2), "infected mice"),
+    x = "Treatment",
+    y = "Proportion Surviving",
+    caption = "Higher bar = better survival"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+print(p_survival_rate)
+
+# Display table
+cat("\nSurvival Summary Table:\n")
+print(as.data.frame(survival_summary))
+```
+
+**Key Finding:**
+- Which treatment had the best survival?
+- Which had the worst?
+- How does this relate to microbiome diversity?
+
+---
+
+# Part 8: Synthesis and Conclusions
+
+## Summary of Key Findings
+
+```{r summary-figure, fig.width=12, fig.height=8}
+# Create a multi-panel summary figure
+p1 <- ggplot(alpha_df %>% filter(treatment_days == "D7"),
+             aes(x = treatment, y = Shannon, fill = treatment)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "A) Alpha Diversity", y = "Shannon Index", x = NULL) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+p2 <- plot_ordination(ps2 %>% subset_samples(treatment_days == "D7"),
+                      ordinate(ps2 %>% subset_samples(treatment_days == "D7"),
+                               method = "PCoA", distance = "unifrac"),
+                      color = "treatment") +
+  geom_point(size = 3, alpha = 0.7) +
+  stat_ellipse() +
+  labs(title = "B) Beta Diversity (Day 7)") +
+  theme_bw() +
+  theme(legend.position = "none")
+
+p3 <- p_survival_rate +
+  labs(title = "C) Survival Rate", x = NULL) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p4 <- ggplot(phylum_dynamics %>% filter(treatment_days == "D7", mean_abundance > 0.05),
+             aes(x = treatment, y = mean_abundance, fill = Phylum)) +
+  geom_col(position = "stack") +
+  labs(title = "D) Phylum Composition (Day 7)",
+       y = "Mean Relative Abundance", x = NULL) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Arrange
+gridExtra::grid.arrange(p1, p2, p3, p4, ncol = 2,
+                       top = "Summary: Microbiome Composition and Viral Infection Outcomes")
+```
+
+## Main Conclusions
+
+**From this analysis, we learned:**
+
+1. **Antibiotics drastically alter the gut microbiome**
+   - Amp+Metro combination caused the most severe depletion
+   - Diversity remained low throughout infection
+
+2. **Different antibiotics have different effects**
+   - Ampicillin targets certain bacterial groups
+   - Metronidazole targets others
+   - Combined treatment is NOT simply additive
+
+3. **Specific bacterial taxa are lost**
+   - Members of Bacteroidetes and Firmicutes were depleted
+   - Some bacteria may be antibiotic-resistant and bloom
+
+4. **Microbiome composition correlates with survival**
+   - Treatments that altered the microbiome most had different survival outcomes
+   - This suggests the microbiome plays a functional role in infection
+
+5. **Bacterial diversity may protect (or harm)**
+   - The relationship between diversity and survival varied by treatment
+   - Context matters!
+
+## Biological Interpretation
+
+The gut microbiome can influence viral infection through several mechanisms:
+
+- **Immune system modulation:** Gut bacteria train the immune system
+- **Metabolite production:** Bacterial metabolites (e.g., short-chain fatty acids) affect immunity
+- **Resource competition:** Bacteria compete with viruses for nutrients and space
+- **Barrier function:** A healthy microbiome maintains gut barrier integrity
+
+The original paper showed that **fecal microbiota transplantation** could transfer protection, proving causality!
+
+## What's Next?
+
+To extend this analysis, you could:
+
+1. **Functional prediction:** Use tools like PICRUSt2 to predict bacterial functions
+2. **Metabolomics:** Measure actual bacterial metabolites in samples
+3. **Mechanistic studies:** Test specific bacteria in germ-free mice
+4. **Other viruses:** Does this pattern hold for other viral infections?
+5. **Human data:** Can we find similar patterns in human cohorts?
+
+---
+
+# Session Information
+
+Always include session info for reproducibility:
+
+```{r session-info}
+sessionInfo()
+```
+
+---
+
+# Practice Exercises
+
+## Exercise 1: Explore Another Timepoint
+Repeat the differential abundance analysis comparing Vehicle vs AmpMetro at **Day 3** instead of Day 7. Do you find the same differentially abundant taxa?
+
+## Exercise 2: Different Antibiotic Comparison
+Compare **Ampicillin alone** vs **Metronidazole alone**. Which antibiotic has a bigger effect on the microbiome?
+
+## Exercise 3: Time Series Analysis
+Create a plot showing how the **Bacteroidetes/Firmicutes ratio** changes over time for each treatment. This ratio is often used as a microbiome health indicator.
+
+## Exercise 4: Advanced Challenge
+Subset to only **mice that died** and analyze whether their microbiomes were already different at Day 0 (before symptoms). Can we predict who will die based on baseline microbiome?
+
+---
+
+# Additional Resources
+
+**Learn More About:**
+
+- [phyloseq documentation](https://joey711.github.io/phyloseq/)
+- [DESeq2 for microbiome data](https://bioconductor.org/packages/release/bioc/html/DESeq2.html)
+- [PERMANOVA explained](https://archetypalecology.wordpress.com/2018/02/21/permanova/)
+- [Original paper: Thackray et al. 2018](https://www.ncbi.nlm.nih.gov/pubmed/29590614)
+
+**Other microbiome analysis tools:**
+
+- QIIME2: End-to-end pipeline
+- DADA2: ASV calling from raw sequences
+- MicrobiomeAnalyst: Web-based analysis
+- R packages: microbiome, vegan, ggpubr, ampvis2
+
+---
+
+**Congratulations!** You've completed a full 16S microbiome analysis workflow and connected microbial ecology to a real biological question about viral infection outcomes.
+
+**Key takeaway:** The microbiome is not just a collection of bacteria – it's a functional community that can influence host health and disease!
