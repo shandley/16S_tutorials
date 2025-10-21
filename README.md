@@ -53,15 +53,43 @@ library(ggpubr)
 library(gridExtra)
 ```
 
+See `PACKAGE_MANAGEMENT.md` for detailed installation instructions and options.
+
+## Quick Start
+
+### Option 1: Automated Setup (Recommended)
+
+1. Clone this repository to Posit Cloud
+2. Run the setup script:
+   ```r
+   source("setup_packages.R")
+   ```
+3. Wait 5-10 minutes for packages to install
+4. Open and run `16S_tutorial_revised.Rmd`
+
+### Option 2: Manual Installation
+
+```r
+# Install CRAN packages
+install.packages(c("tidyverse", "vegan", "ggpubr", "gridExtra"))
+
+# Install Bioconductor packages
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install(c("phyloseq", "DESeq2"))
+```
+
 ## Usage
 
 ### Posit Cloud (Recommended)
 
-1. Create a new Posit Cloud project
-2. Clone this repository
-3. Ensure data files are in `/cloud/project/data/` directory
-4. Open `16S_tutorial_revised.Rmd`
-5. Knit to HTML or run interactively
+1. Create a new Posit Cloud project from Git Repository
+2. Use URL: `https://github.com/shandley/16S_tutorials`
+3. Create a `data/` subdirectory
+4. Move `16S_mapping.txt` and `16S_tutorial_data.RDS` into `data/`
+5. Run `source("setup_packages.R")` to install packages (one-time only)
+6. Open `16S_tutorial_revised.Rmd`
+7. Knit to HTML or run interactively
 
 ### Local Installation
 

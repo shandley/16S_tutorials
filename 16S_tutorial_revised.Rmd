@@ -69,28 +69,69 @@ We'll analyze the bacterial microbiome across these treatment groups to:
 
 # Setup
 
-## Load Required Packages
+## Package Management and Installation
+
+Before we begin, we need to install and load several R packages. This section teaches you about package management - an important skill for reproducible research.
+
+**What are R packages?**
+Packages are collections of functions, data, and documentation that extend R's capabilities. For microbiome analysis, we need specialized packages that aren't included with base R.
+
+**First time setup:** If you haven't already, run the `setup_packages.R` script to install all required packages. You only need to do this once per Posit Cloud project.
+
+### Check and Load Packages
+
+This code chunk checks if packages are installed and provides helpful error messages if they're missing:
 
 ```{r load-libraries}
+# Function to load packages and provide helpful error messages
+load_package <- function(pkg) {
+  if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
+    stop(paste0(
+      "Package '", pkg, "' is not installed.\n",
+      "Please run the setup_packages.R script first, or install with:\n",
+      if (pkg %in% c("phyloseq", "DESeq2")) {
+        paste0("BiocManager::install('", pkg, "')")
+      } else {
+        paste0("install.packages('", pkg, "')")
+      }
+    ))
+  }
+}
+
+# Load required packages
+cat("Loading required packages...\n")
+
 # Core microbiome analysis
-library(phyloseq)
+load_package("phyloseq")
 
 # Data manipulation and visualization
-library(tidyverse)
+load_package("tidyverse")
 
 # Statistical testing
-library(vegan)        # For PERMANOVA and ecological statistics
-library(ggpubr)       # For adding statistics to plots
+load_package("vegan")        # For PERMANOVA and ecological statistics
+load_package("ggpubr")       # For adding statistics to plots
 
 # Differential abundance testing
-library(DESeq2)       # For identifying differentially abundant taxa
+load_package("DESeq2")       # For identifying differentially abundant taxa
 
 # Additional plotting
-library(gridExtra)    # For arranging multiple plots
+load_package("gridExtra")    # For arranging multiple plots
+
+cat("All packages loaded successfully!\n\n")
 
 # Set a random seed for reproducibility
+# This ensures statistical tests give the same results each time
 set.seed(12345)
 ```
+
+**Why these packages?**
+
+- **phyloseq:** Specialized for microbiome data - organizes sequences, taxonomy, and metadata together
+- **tidyverse:** Modern R tools for data manipulation (dplyr) and visualization (ggplot2)
+- **vegan:** Ecological statistics, including PERMANOVA for comparing communities
+- **DESeq2:** Statistical testing for count data, originally designed for RNA-seq
+- **ggpubr:** Adds statistical annotations to plots
+- **gridExtra:** Arranges multiple plots into panels
 
 ## Understanding the Data Format
 
