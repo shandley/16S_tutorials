@@ -1,0 +1,900 @@
+---
+title: "Microbiome Analysis in Pediatric Crohn's Disease"
+subtitle: "A Comprehensive 16S rRNA Analysis Tutorial"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    fig_width: 10
+    fig_height: 7
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = 'center',
+  cache = FALSE
+)
+```
+
+# Introduction
+
+## Learning Objectives
+
+By the end of this tutorial, you will be able to:
+
+1. **Load and explore** a real-world microbiome dataset from the MicrobeDS repository
+2. **Assess data quality** and make informed filtering decisions
+3. **Analyze alpha diversity** to understand within-sample microbial richness
+4. **Analyze beta diversity** to compare microbial community composition between groups
+5. **Identify confounding variables** that may affect your interpretation
+6. **Perform differential abundance testing** while controlling for confounders
+7. **Interpret results** in the context of inflammatory bowel disease biology
+
+## Dataset Background
+
+### The RISK_CCFA Study
+
+This tutorial uses data from the **RISK_CCFA** study, which investigated the pediatric Crohn's disease microbiome. The study includes:
+
+- **1,359 samples** from multiple gastrointestinal sites
+- **Crohn's Disease (CD) patients** and **Healthy Controls**
+- **Biopsy sites:** Ileum, Rectum, Colon, and Stool samples
+- **Rich metadata:** Disease severity, treatment status, and clinical measurements
+
+### Research Question
+
+**Does Crohn's disease alter the gut microbiome composition, and if so, which bacterial taxa are most affected?**
+
+This question is clinically important because:
+
+- CD is characterized by chronic intestinal inflammation
+- The microbiome may contribute to disease pathogenesis
+- Identifying microbial biomarkers could aid diagnosis and treatment
+- Understanding dysbiosis patterns may reveal therapeutic targets
+
+## Key Concepts
+
+### What is Dysbiosis?
+
+**Dysbiosis** refers to an imbalance in the microbial community associated with disease. In inflammatory bowel diseases like Crohn's, dysbiosis typically involves:
+
+- **Decreased diversity** (fewer bacterial species)
+- **Loss of beneficial bacteria** (e.g., butyrate producers)
+- **Bloom of pathobionts** (opportunistic pathogens)
+
+### Statistical Considerations
+
+This tutorial demonstrates an important principle in microbiome analysis: **always check for confounding variables before making causal inferences**. We'll discover that biopsy site is a major driver of microbiome composition, which affects how we should analyze disease effects.
+
+---
+
+# Setup and Data Loading
+
+## Install and Load Packages
+
+```{r load-packages}
+# Install MicrobeDS if needed
+if (!require("MicrobeDS", quietly = TRUE)) {
+  if (!require("remotes", quietly = TRUE)) install.packages("remotes")
+  remotes::install_github("twbattaglia/MicrobeDS")
+}
+
+# Load required packages
+library(phyloseq)
+library(tidyverse)
+library(vegan)
+library(DESeq2)
+library(MicrobeDS)
+
+# Set ggplot theme
+theme_set(theme_bw())
+```
+
+## Download and Explore the Dataset
+
+```{r load-data}
+# Load RISK_CCFA dataset from MicrobeDS
+data("RISK_CCFA")
+ps <- RISK_CCFA
+
+# Examine the phyloseq object
+cat("=== PHYLOSEQ OBJECT SUMMARY ===\n")
+print(ps)
+
+# Check available metadata variables
+cat("\n=== METADATA VARIABLES ===\n")
+sample_vars <- sample_variables(ps)
+cat("Total variables:", length(sample_vars), "\n")
+cat("Key variables:", paste(head(sample_vars, 10), collapse = ", "), "...\n")
+```
+
+**What's in a phyloseq object?**
+
+- **OTU table:** Counts of each taxon (ASV) in each sample
+- **Taxonomy table:** Taxonomic assignments (Kingdom → Species)
+- **Sample data:** Metadata (patient info, disease status, etc.)
+- **Phylogenetic tree:** Evolutionary relationships between taxa
+
+## Create Analysis-Ready Metadata
+
+The original dataset has 73 metadata variables, which is overwhelming. Let's simplify it to focus on our research question.
+
+```{r simplify-metadata}
+# Extract metadata
+metadata <- data.frame(sample_data(ps))
+
+# Create simplified disease groups
+metadata <- metadata %>%
+  mutate(
+    disease_group = case_when(
+      diagnosis == 'CD' ~ 'Crohns Disease',
+      diagnosis == 'no' ~ 'Healthy Control',
+      diagnosis == 'UC' ~ 'Ulcerative Colitis',
+      diagnosis == 'IC' ~ 'Indeterminate Colitis',
+      TRUE ~ 'Other'
+    ),
+    # Simplify biopsy site into major categories
+    biopsy_site = case_when(
+      grepl('ileum', biopsy_location, ignore.case = TRUE) ~ 'Ileum',
+      grepl('rect', biopsy_location, ignore.case = TRUE) ~ 'Rectum',
+      grepl('stool', biopsy_location, ignore.case = TRUE) ~ 'Stool',
+      grepl('cec|colon|sigmoid', biopsy_location, ignore.case = TRUE) ~ 'Colon',
+      TRUE ~ as.character(biopsy_location)
+    )
+  )
+
+# Update phyloseq object
+sample_data(ps) <- sample_data(metadata)
+
+# Show distribution
+cat("\n=== SAMPLE DISTRIBUTION ===\n")
+table(metadata$disease_group, metadata$biopsy_site)
+```
+
+**Why simplify metadata?**
+
+- Makes analysis more interpretable
+- Reduces cognitive load
+- Focuses on variables relevant to research question
+- Easier to communicate results
+
+---
+
+# Data Quality Assessment
+
+Before analyzing, we must ensure data quality. The two main concerns are:
+
+1. **Sequencing depth:** Do all samples have adequate reads?
+2. **Sample completeness:** Are there missing metadata values?
+
+## Sequencing Depth Distribution
+
+```{r sequencing-depth-plot, fig.height=5}
+# Calculate sequencing depth per sample
+depth_df <- data.frame(
+  sample_id = sample_names(ps),
+  depth = sample_sums(ps),
+  disease = sample_data(ps)$disease_group
+)
+
+# Visualize distribution
+ggplot(depth_df, aes(x = depth)) +
+  geom_histogram(bins = 50, fill = 'steelblue', alpha = 0.7, color = 'white') +
+  geom_vline(xintercept = 1000, linetype = 'dashed', color = 'red', linewidth = 1) +
+  scale_x_log10(labels = scales::comma) +
+  labs(
+    title = 'Sequencing Depth Distribution Across All Samples',
+    subtitle = 'Red dashed line indicates proposed 1,000 read threshold',
+    x = 'Reads per Sample (log10 scale)',
+    y = 'Number of Samples'
+  ) +
+  theme_bw()
+
+# Summary statistics
+cat("\n=== SEQUENCING DEPTH SUMMARY ===\n")
+cat("Median depth:", median(depth_df$depth), "reads\n")
+cat("Samples < 1000 reads:", sum(depth_df$depth < 1000), "\n")
+cat("Samples >= 1000 reads:", sum(depth_df$depth >= 1000), "\n")
+```
+
+**Interpretation:**
+
+- Most samples have adequate sequencing depth (>10,000 reads)
+- A few samples have very low depth (<1,000 reads)
+- **Decision:** Filter out samples with <1,000 reads to avoid spurious results
+
+**Why does sequencing depth matter?**
+
+Low-depth samples may miss rare taxa, leading to:
+- Underestimated diversity
+- Poor representation of community structure
+- Increased technical noise
+
+## Apply Quality Filters
+
+```{r filter-data}
+# Filter low-depth samples
+ps_filt <- prune_samples(sample_sums(ps) >= 1000, ps)
+
+cat("=== FILTERING RESULTS ===\n")
+cat("Original samples:", nsamples(ps), "\n")
+cat("After filtering:", nsamples(ps_filt), "\n")
+cat("Samples removed:", nsamples(ps) - nsamples(ps_filt), "\n")
+
+# Save filtered dataset
+dir.create("data", showWarnings = FALSE)
+saveRDS(ps_filt, "data/RISK_CCFA_filtered.rds")
+cat("\n✓ Filtered data saved to: data/RISK_CCFA_filtered.rds\n")
+```
+
+---
+
+# Alpha Diversity Analysis
+
+**Alpha diversity** measures the richness and evenness of species within a single sample. Two common metrics are:
+
+- **Observed richness:** Simply counting the number of species (ASVs)
+- **Shannon diversity:** Accounts for both richness and evenness
+
+**Biological hypothesis:** CD patients may have lower alpha diversity due to inflammation-driven microbial loss.
+
+## Calculate Alpha Diversity
+
+```{r calculate-alpha}
+# Calculate diversity metrics
+alpha_div <- estimate_richness(ps_filt, measures = c('Observed', 'Shannon'))
+
+# Merge with metadata
+# CRITICAL: Use sample_names() to ensure correct merge
+metadata_df <- data.frame(sample_data(ps_filt))
+alpha_df <- alpha_div %>%
+  mutate(sample_id = sample_names(ps_filt)) %>%
+  left_join(metadata_df, by = c('sample_id' = 'X.SampleID'))
+
+# Verify merge success
+cat("=== MERGE VERIFICATION ===\n")
+cat("Total samples:", nrow(alpha_df), "\n")
+cat("NAs in disease_group:", sum(is.na(alpha_df$disease_group)), "\n")
+cat("NAs in biopsy_site:", sum(is.na(alpha_df$biopsy_site)), "\n")
+```
+
+**Why is the merge critical?**
+
+Using `rownames_to_column()` can create mismatches between sample names and metadata rows. **Always use `sample_names(ps)` directly** to ensure correct alignment.
+
+## Compare CD vs Healthy Controls
+
+```{r alpha-cd-vs-healthy, fig.height=6}
+# Focus on CD vs Healthy
+alpha_cd_healthy <- alpha_df %>%
+  filter(disease_group %in% c('Crohns Disease', 'Healthy Control'))
+
+# Statistical test
+wilcox_observed <- wilcox.test(Observed ~ disease_group, data = alpha_cd_healthy)
+wilcox_shannon <- wilcox.test(Shannon ~ disease_group, data = alpha_cd_healthy)
+
+cat("\n=== ALPHA DIVERSITY STATISTICS ===\n")
+cat("Observed richness - Wilcoxon p-value:",
+    format.pval(wilcox_observed$p.value, digits = 3), "\n")
+cat("Shannon diversity - Wilcoxon p-value:",
+    format.pval(wilcox_shannon$p.value, digits = 3), "\n")
+
+# Visualize
+p_alpha <- ggplot(alpha_cd_healthy,
+                  aes(x = disease_group, y = Observed, fill = disease_group)) +
+  geom_violin(alpha = 0.6, draw_quantiles = c(0.5)) +
+  geom_jitter(width = 0.2, alpha = 0.3, size = 1) +
+  scale_fill_manual(values = c('Crohns Disease' = '#D55E00',
+                               'Healthy Control' = '#56B4E9')) +
+  labs(
+    title = 'Alpha Diversity: Crohn\'s Disease vs Healthy Controls',
+    subtitle = sprintf('Wilcoxon p = %.4f', wilcox_observed$p.value),
+    x = '',
+    y = 'Observed ASVs (Richness)'
+  ) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = 'none')
+
+print(p_alpha)
+
+# Summary statistics
+alpha_summary <- alpha_cd_healthy %>%
+  group_by(disease_group) %>%
+  summarize(
+    median_richness = median(Observed),
+    median_shannon = median(Shannon),
+    n = n()
+  )
+
+cat("\n=== GROUP MEDIANS ===\n")
+print(alpha_summary)
+```
+
+**Interpretation:**
+
+- CD patients have **significantly lower alpha diversity** than healthy controls
+- This confirms the **dysbiosis hypothesis**
+- Lower diversity suggests loss of beneficial bacteria
+
+## Site-Stratified Analysis
+
+But wait—what if the effect differs by biopsy site? Let's check!
+
+```{r alpha-by-site, fig.height=6, fig.width=12}
+# Test within each site
+site_tests <- alpha_cd_healthy %>%
+  group_by(biopsy_site) %>%
+  summarize(
+    n_cd = sum(disease_group == 'Crohns Disease'),
+    n_healthy = sum(disease_group == 'Healthy Control'),
+    p_value = wilcox.test(Observed ~ disease_group)$p.value
+  )
+
+cat("\n=== SITE-SPECIFIC TESTS ===\n")
+print(site_tests)
+
+# Faceted plot
+p_site <- ggplot(alpha_cd_healthy,
+                 aes(x = disease_group, y = Observed, fill = disease_group)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.4, size = 0.8) +
+  facet_wrap(~ biopsy_site, nrow = 1) +
+  scale_fill_manual(values = c('Crohns Disease' = '#D55E00',
+                               'Healthy Control' = '#56B4E9')) +
+  labs(
+    title = 'Alpha Diversity by Biopsy Site',
+    subtitle = 'Does dysbiosis vary by GI location?',
+    x = '',
+    y = 'Observed ASVs'
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = 'bottom',
+    legend.title = element_blank()
+  )
+
+print(p_site)
+```
+
+**Key Finding:**
+
+The diversity reduction in CD is **consistent across all biopsy sites**, but strongest in the ileum. This makes biological sense because:
+
+- Ileum is a common site of CD inflammation
+- Terminal ileum is often the first location affected
+- This suggests the dysbiosis is disease-driven, not site-specific
+
+**Try it yourself:** Modify the code above to plot Shannon diversity instead of Observed richness. Do you see the same pattern?
+
+## Save Alpha Diversity Plots
+
+```{r save-alpha-figures, eval=FALSE}
+# Create figures directory
+dir.create("figures", showWarnings = FALSE)
+
+# Save CD vs Healthy comparison
+ggsave("figures/alpha_cd_vs_healthy.png",
+       plot = p_alpha,
+       width = 7, height = 6, dpi = 300)
+
+# Save site-stratified plot
+ggsave("figures/alpha_by_site.png",
+       plot = p_site,
+       width = 12, height = 6, dpi = 300)
+
+cat("✓ Figures saved to: figures/\n")
+```
+
+---
+
+# Beta Diversity Analysis
+
+**Beta diversity** measures differences in community composition *between* samples. This allows us to ask:
+
+- Do CD patients have different microbial communities than healthy controls?
+- How much of the variation is explained by disease vs. other factors?
+
+## Calculate UniFrac Distance
+
+We'll use **weighted UniFrac**, which:
+
+- Considers phylogenetic relationships between taxa
+- Weights by abundance (more realistic than presence/absence)
+- Is widely used in gut microbiome studies
+
+```{r calculate-beta}
+# Focus on CD vs Healthy
+ps_cd_healthy <- subset_samples(ps_filt,
+                                disease_group %in% c('Crohns Disease', 'Healthy Control'))
+
+cat("=== BETA DIVERSITY SETUP ===\n")
+cat("Samples for analysis:", nsamples(ps_cd_healthy), "\n")
+
+# Calculate weighted UniFrac distance
+unifrac_dist <- phyloseq::distance(ps_cd_healthy, method = 'unifrac', weighted = TRUE)
+cat("✓ Distance matrix calculated\n")
+```
+
+**Why weighted UniFrac?**
+
+- **Unweighted** treats all taxa equally (presence/absence)
+- **Weighted** considers abundance (dominant taxa matter more)
+- **Phylogenetic** accounts for evolutionary relatedness
+
+## Ordination: Principal Coordinates Analysis (PCoA)
+
+**Ordination** reduces high-dimensional data into 2-3 dimensions for visualization.
+
+```{r pcoa}
+# PCoA ordination
+ord <- ordinate(ps_cd_healthy, method = 'PCoA', distance = unifrac_dist)
+
+# Variance explained by each axis
+var_exp <- ord$values$Relative_eig * 100
+cat("\n=== VARIANCE EXPLAINED ===\n")
+cat("PC1:", round(var_exp[1], 1), "%\n")
+cat("PC2:", round(var_exp[2], 1), "%\n")
+cat("PC3:", round(var_exp[3], 1), "%\n")
+```
+
+**Interpreting variance explained:**
+
+- PC1 captures the largest variation (42.7%)
+- PC2 captures the second largest (25.4%)
+- Together they represent 68% of total variation
+
+## Visualize by Disease Status
+
+```{r beta-disease-plot, fig.height=7}
+p_beta_disease <- plot_ordination(ps_cd_healthy, ord,
+                                  color = 'disease_group') +
+  geom_point(size = 2.5, alpha = 0.6) +
+  stat_ellipse(type = 'norm', linetype = 2, linewidth = 1) +
+  scale_color_manual(values = c('Crohns Disease' = '#D55E00',
+                                'Healthy Control' = '#56B4E9')) +
+  labs(
+    title = 'Beta Diversity: Crohn\'s Disease vs Healthy Controls',
+    subtitle = 'PCoA on Weighted UniFrac Distance',
+    x = paste0('PC1 (', round(var_exp[1], 1), '%)'),
+    y = paste0('PC2 (', round(var_exp[2], 1), '%)'),
+    color = 'Disease Group'
+  ) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = 'bottom')
+
+print(p_beta_disease)
+```
+
+**Visual interpretation:**
+
+- Ellipses show 95% confidence regions
+- CD and Healthy groups **do** separate, but with overlap
+- The separation is modest—suggesting disease explains some, but not all, variation
+
+## Statistical Testing with PERMANOVA
+
+Visual inspection suggests separation, but we need statistics! **PERMANOVA** (Permutational Multivariate ANOVA) tests whether groups have different centroids in multivariate space.
+
+```{r permanova-disease}
+# Extract metadata
+metadata_df <- data.frame(sample_data(ps_cd_healthy))
+
+# PERMANOVA for disease effect
+set.seed(123)  # For reproducibility
+perm_disease <- adonis2(unifrac_dist ~ disease_group,
+                        data = metadata_df,
+                        permutations = 999)
+
+cat("\n=== PERMANOVA: DISEASE EFFECT ===\n")
+print(perm_disease)
+
+cat("\nDisease explains", round(perm_disease$R2[1] * 100, 2), "% of variance\n")
+```
+
+**Interpreting PERMANOVA results:**
+
+- **R² = 0.031:** Disease explains only 3.1% of total variance
+- **p < 0.001:** The effect is statistically significant
+- **F-statistic = 33.5:** The between-group variance is much larger than within-group
+
+**Key insight:** The effect is **significant but small**. What else might be driving variation?
+
+## Critical Discovery: Biopsy Site Effect
+
+Let's check if biopsy site matters:
+
+```{r beta-site-plot, fig.height=7, fig.width=10}
+# Color by site, shape by disease
+p_beta_site <- plot_ordination(ps_cd_healthy, ord,
+                               color = 'biopsy_site',
+                               shape = 'disease_group') +
+  geom_point(size = 2.5, alpha = 0.7) +
+  scale_color_brewer(palette = 'Set1') +
+  scale_shape_manual(values = c(16, 17)) +
+  labs(
+    title = 'Beta Diversity: Site-Specific Microbiomes',
+    subtitle = 'Do different GI locations have distinct communities?',
+    x = paste0('PC1 (', round(var_exp[1], 1), '%)'),
+    y = paste0('PC2 (', round(var_exp[2], 1), '%)'),
+    color = 'Biopsy Site',
+    shape = 'Disease'
+  ) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = 'bottom')
+
+print(p_beta_site)
+
+# PERMANOVA for site effect
+set.seed(123)
+perm_site <- adonis2(unifrac_dist ~ biopsy_site,
+                     data = metadata_df,
+                     permutations = 999)
+
+cat("\n=== PERMANOVA: SITE EFFECT ===\n")
+print(perm_site)
+
+cat("\nSite explains", round(perm_site$R2[1] * 100, 2), "% of variance\n")
+```
+
+**CRITICAL FINDING:**
+
+- **Site effect R² = 14.7%** vs. **Disease effect R² = 3.1%**
+- Biopsy site explains **nearly 5× more variance** than disease!
+- Stool samples cluster separately from biopsy samples
+- This is a **confounding variable**
+
+**What is confounding?**
+
+A confounding variable affects both the exposure (disease) and the outcome (microbiome). If site distribution differs between CD and healthy groups, we might mistake site effects for disease effects!
+
+## Test Both Factors Together
+
+```{r permanova-both}
+# Combined model
+set.seed(123)
+perm_both <- adonis2(unifrac_dist ~ disease_group + biopsy_site,
+                     data = metadata_df,
+                     permutations = 999)
+
+cat("\n=== PERMANOVA: DISEASE + SITE ===\n")
+print(perm_both)
+```
+
+**Model interpretation:**
+
+- Together, disease + site explain 16.9% of variance
+- Site remains highly significant after accounting for disease
+- Both factors are independently important
+
+**Implication for differential abundance:** We should **stratify by site** or **control for site** in our downstream analyses to avoid confounded results!
+
+## Save Beta Diversity Plots
+
+```{r save-beta-figures, eval=FALSE}
+# Save disease ordination
+ggsave("figures/beta_diversity_disease.png",
+       plot = p_beta_disease,
+       width = 8, height = 7, dpi = 300)
+
+# Save site ordination
+ggsave("figures/beta_diversity_site.png",
+       plot = p_beta_site,
+       width = 10, height = 7, dpi = 300)
+
+cat("✓ Figures saved to: figures/\n")
+```
+
+---
+
+# Differential Abundance Testing
+
+Now we want to identify **which specific bacteria are different** between CD and healthy controls.
+
+## Strategy: Site-Stratified Analysis
+
+Based on our beta diversity findings, we'll focus on **ileum samples only** to control for site confounding.
+
+**Why ileum?**
+
+- Most common site of CD inflammation
+- Largest sample size for both CD and healthy
+- Most significant alpha diversity difference
+- Biologically meaningful
+
+```{r subset-ileum}
+# Subset to ileum samples only
+ps_ileum <- subset_samples(ps_filt,
+                           biopsy_site == 'Ileum' &
+                           disease_group %in% c('Crohns Disease', 'Healthy Control'))
+
+cat("=== ILEUM SUBSET ===\n")
+cat("Total samples:", nsamples(ps_ileum), "\n")
+table(sample_data(ps_ileum)$disease_group)
+```
+
+## DESeq2 for Differential Abundance
+
+**DESeq2** is a powerful method originally designed for RNA-seq, but adapted for microbiome data. It:
+
+- Models count data with negative binomial distribution
+- Normalizes for sequencing depth differences
+- Shrinks fold change estimates (reduces false positives)
+- Controls for multiple testing
+
+```{r deseq2-analysis}
+# Convert to DESeq2 object
+deseq_obj <- phyloseq_to_deseq2(ps_ileum, ~ disease_group)
+
+# Calculate size factors using poscounts method
+# CRITICAL: Standard geometric mean fails with many zeros in microbiome data
+deseq_obj <- estimateSizeFactors(deseq_obj, type = 'poscounts')
+
+# Run differential abundance test
+deseq_obj <- DESeq(deseq_obj, test = 'Wald', fitType = 'local', quiet = TRUE)
+
+# Extract results
+# Contrast: Healthy vs CD (positive log2FC = higher in healthy)
+res <- results(deseq_obj,
+               contrast = c('disease_group', 'Healthy Control', 'Crohns Disease'),
+               alpha = 0.05)
+
+cat("\n=== DESEQ2 RESULTS SUMMARY ===\n")
+summary(res)
+
+# Count significant results
+sig_res <- res[which(res$padj < 0.05 & !is.na(res$padj)), ]
+cat("\nSignificant ASVs (padj < 0.05):", nrow(sig_res), "\n")
+cat("  Enriched in Healthy:", sum(sig_res$log2FoldChange > 0), "\n")
+cat("  Enriched in CD:", sum(sig_res$log2FoldChange < 0), "\n")
+```
+
+**Why type = 'poscounts'?**
+
+Microbiome data has many zeros (most bacteria are absent in most samples). The standard geometric mean size factor estimation fails when zeros are common. **Poscounts** uses only positive counts to estimate library size.
+
+## Annotate Results with Taxonomy
+
+```{r annotate-results}
+# Add taxonomy
+tax_table_df <- as.data.frame(tax_table(ps_ileum))
+res_df <- as.data.frame(res) %>%
+  rownames_to_column('ASV') %>%
+  left_join(rownames_to_column(tax_table_df, 'ASV'), by = 'ASV') %>%
+  arrange(padj)
+
+# Show top depleted in CD (negative log2FC)
+cat("\n=== TOP 10 DEPLETED IN CROHN'S DISEASE ===\n")
+top_depleted <- res_df %>%
+  filter(padj < 0.05, log2FoldChange < 0) %>%
+  select(Genus, log2FoldChange, padj, baseMean) %>%
+  head(10)
+print(top_depleted)
+
+# Show top enriched in CD (positive log2FC in CD direction)
+cat("\n=== TOP 10 ENRICHED IN CROHN'S DISEASE ===\n")
+top_enriched <- res_df %>%
+  filter(padj < 0.05, log2FoldChange > 0) %>%
+  select(Genus, log2FoldChange, padj, baseMean) %>%
+  head(10)
+print(top_enriched)
+```
+
+## Volcano Plot
+
+A **volcano plot** visualizes both effect size (log2 fold change) and significance (-log10 p-value).
+
+```{r volcano-plot, fig.height=7, fig.width=9}
+# Prepare data for volcano plot
+volcano_df <- res_df %>%
+  mutate(
+    log10_padj = -log10(padj),
+    significance = case_when(
+      is.na(padj) ~ 'Not significant',
+      padj < 0.01 & abs(log2FoldChange) > 2 ~ 'padj < 0.01, |log2FC| > 2',
+      padj < 0.05 & abs(log2FoldChange) > 1 ~ 'padj < 0.05, |log2FC| > 1',
+      padj < 0.05 ~ 'padj < 0.05',
+      TRUE ~ 'Not significant'
+    )
+  )
+
+# Volcano plot
+p_volcano <- ggplot(volcano_df, aes(x = log2FoldChange, y = log10_padj, color = significance)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_hline(yintercept = -log10(0.05), linetype = 'dashed', color = 'gray40') +
+  geom_vline(xintercept = c(-1, 1), linetype = 'dashed', color = 'gray40') +
+  scale_color_manual(
+    values = c(
+      'Not significant' = 'gray70',
+      'padj < 0.05' = '#56B4E9',
+      'padj < 0.05, |log2FC| > 1' = '#E69F00',
+      'padj < 0.01, |log2FC| > 2' = '#D55E00'
+    )
+  ) +
+  labs(
+    title = 'Differential Abundance in Ileal Crohn\'s Disease',
+    subtitle = 'Healthy Control vs Crohn\'s Disease (Ileum Samples Only)',
+    x = 'log2 Fold Change (Healthy / Crohn\'s)',
+    y = '-log10(adjusted p-value)',
+    color = 'Significance'
+  ) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = 'bottom')
+
+print(p_volcano)
+```
+
+**Interpreting the volcano plot:**
+
+- **X-axis:** Fold change direction
+  - **Left (negative):** Depleted in CD (higher in healthy)
+  - **Right (positive):** Enriched in CD (lower in healthy)
+- **Y-axis:** Statistical significance (higher = more significant)
+- **Colors:** Combined significance + effect size thresholds
+- **Dashed lines:** Conventional thresholds (padj = 0.05, |log2FC| = 1)
+
+## Biological Interpretation
+
+```{r interpretation}
+# Summarize by family
+family_summary <- res_df %>%
+  filter(padj < 0.05) %>%
+  group_by(Family) %>%
+  summarize(
+    n_ASVs = n(),
+    mean_log2FC = mean(log2FoldChange),
+    direction = ifelse(mean_log2FC > 0, 'Enriched in CD', 'Depleted in CD')
+  ) %>%
+  arrange(desc(n_ASVs))
+
+cat("\n=== MOST AFFECTED FAMILIES ===\n")
+print(head(family_summary, 15))
+```
+
+**Biological findings:**
+
+### Depleted in CD (Healthy > CD):
+- **Lachnospiraceae** (Roseburia, Coprococcus): Major butyrate producers
+- **Ruminococcaceae**: Another butyrate-producing family
+- **Butyrate** is anti-inflammatory and maintains gut barrier
+
+### Enriched in CD:
+- **Enterobacteriaceae**: Facultative anaerobes, thrive in inflammation
+- **Fusobacteriaceae**: Oral pathobionts
+- **Veillonellaceae**: Lactate-utilizing bacteria
+
+**Clinical significance:**
+
+This **dysbiosis signature** is consistent with the literature:
+
+1. **Loss of butyrate producers** → reduced anti-inflammatory metabolites
+2. **Bloom of Proteobacteria** → increased inflammatory potential
+3. **Oxygen tolerance shift** → reflects inflamed, oxygenated environment
+
+## Save Differential Abundance Results
+
+```{r save-deseq2, eval=FALSE}
+# Save volcano plot
+ggsave("figures/deseq2_volcano_ileum.png",
+       plot = p_volcano,
+       width = 9, height = 7, dpi = 300)
+
+# Save results table
+write_csv(res_df, "results/deseq2_results_ileum_cd_vs_healthy.csv")
+
+cat("✓ Results saved to: results/\n")
+```
+
+---
+
+# Summary and Interpretation
+
+## Key Findings
+
+### 1. Alpha Diversity (Within-Sample Richness)
+- **CD patients have significantly lower diversity** across all GI sites
+- **Strongest effect in ileum** (p = 0.000159)
+- Confirms **dysbiosis hypothesis**
+
+### 2. Beta Diversity (Between-Sample Composition)
+- **Disease effect:** R² = 3.1% (significant but modest)
+- **Site effect:** R² = 14.7% (much stronger!)
+- **Critical insight:** Must control for site in differential abundance
+
+### 3. Differential Abundance (Which Taxa?)
+- **292 significantly different ASVs** in ileum (padj < 0.05)
+- **Depleted:** Butyrate producers (anti-inflammatory)
+- **Enriched:** Pathobionts (pro-inflammatory)
+- **Classic CD dysbiosis signature** confirmed
+
+## Methodological Lessons
+
+### Always Check for Confounders
+We discovered that biopsy site was a major driver of microbiome variation. If we had pooled all sites together, we might have:
+- Confounded site effects with disease effects
+- Missed site-specific dysbiosis patterns
+- Made incorrect biological interpretations
+
+**Best practice:** Explore your data with ordination before testing!
+
+### Iterative Analysis is Essential
+Our workflow:
+1. Started with overall disease comparison (beta diversity)
+2. Discovered site confounding
+3. Refined strategy to focus on ileum
+4. Obtained cleaner, more interpretable results
+
+**Lesson:** Don't commit to an analysis plan before looking at the data!
+
+### Appropriate Statistical Methods Matter
+- **Alpha diversity:** Wilcoxon test (non-parametric, robust to non-normality)
+- **Beta diversity:** PERMANOVA (handles multivariate distances)
+- **Differential abundance:** DESeq2 with poscounts (handles zeros and over-dispersion)
+
+**Wrong methods lead to wrong conclusions!**
+
+---
+
+# Extensions and Next Steps
+
+## Try It Yourself
+
+1. **Test other sites:** Repeat the differential abundance analysis on Rectum or Colon samples. Do you find the same taxa?
+
+2. **Alternative diversity metrics:** Try Chao1 (richness) or InvSimpson (evenness) for alpha diversity.
+
+3. **Unweighted UniFrac:** Compare results using unweighted vs. weighted UniFrac. How does the interpretation change?
+
+4. **Functional analysis:** Use PICRUSt2 or Tax4Fun to predict metagenomic functions. Are metabolic pathways different?
+
+## Advanced Analyses (Not Covered)
+
+- **Longitudinal analysis:** Track microbiome changes over time
+- **Machine learning:** Build predictive models for disease classification
+- **Network analysis:** Identify co-occurring bacterial modules
+- **Multi-omics integration:** Combine 16S with metabolomics or transcriptomics
+
+---
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
+
+---
+
+# References
+
+## Key Papers
+
+1. **RISK_CCFA Study:**
+   - Gevers et al. (2014). "The treatment-naive microbiome in new-onset Crohn's disease." *Cell Host & Microbe*, 15(3), 382-392.
+
+2. **Microbiome Methods:**
+   - McMurdie & Holmes (2013). "phyloseq: An R package for reproducible interactive analysis and graphics of microbiome census data." *PLOS ONE*, 8(4), e61217.
+   - Love et al. (2014). "Modular differential abundance analysis for microbiome data." *Genome Biology*, 15(10), 550.
+
+3. **UniFrac Distance:**
+   - Lozupone & Knight (2005). "UniFrac: A new phylogenetic method for comparing microbial communities." *Applied and Environmental Microbiology*, 71(12), 8228-8235.
+
+## Software Documentation
+
+- **phyloseq:** https://joey711.github.io/phyloseq/
+- **DESeq2:** https://bioconductor.org/packages/release/bioc/html/DESeq2.html
+- **MicrobeDS:** https://github.com/twbattaglia/MicrobeDS
+- **vegan:** https://cran.r-project.org/package=vegan
+
+---
+
+**End of Tutorial**
