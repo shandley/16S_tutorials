@@ -558,15 +558,21 @@ gridExtra::grid.arrange(p_richness, p_shannon, ncol = 2)
 
 **Optional: Save this figure**
 
+If you want to save publication-quality figures for your reports or presentations, you can run the code below.
+
+**How to use:** Change `eval=FALSE` to `eval=TRUE` in the chunk header above (line with `save-alpha-figure`), then run the chunk.
+
 ```{r save-alpha-figure, eval=FALSE}
+# Create figures directory if it doesn't exist
+dir.create("figures", showWarnings = FALSE)
+
 # Save high-resolution figure for publications/reports
 alpha_combined <- gridExtra::arrangeGrob(p_richness, p_shannon, ncol = 2)
 ggsave("figures/alpha_diversity_over_time.png",
        plot = alpha_combined,
        width = 12, height = 5, dpi = 300)
 
-# Note: Make sure a 'figures/' directory exists first:
-# dir.create("figures", showWarnings = FALSE)
+cat("✓ Figure saved to: figures/alpha_diversity_over_time.png\n")
 ```
 
 **Observations:**
@@ -703,6 +709,31 @@ print(p_beta_facet)
 - Which axis (PC1 or PC2) best separates treatments?
 - How do communities change over time?
 
+**Advanced tip: Customizing colors and shapes**
+
+If you want more control over plot aesthetics (especially when plotting many categories), you can manually specify colors and shapes:
+
+```r
+# Example: Manual color palette
+my_colors <- c("Vehicle" = "#E69F00", "Amp" = "#56B4E9",
+               "Metro" = "#009E73", "AmpMetro" = "#D55E00")
+
+# Example: Manual shapes (useful when you have >6 categories)
+my_shapes <- c("D0" = 16, "D3" = 17, "D7" = 15, "D13" = 18)
+
+# Apply to plot
+plot_ordination(ps2, ord, color = "treatment", shape = "treatment_days") +
+  geom_point(size = 3) +
+  scale_color_manual(values = my_colors) +
+  scale_shape_manual(values = my_shapes) +
+  theme_bw()
+```
+
+This gives you precise control over visual appearance, which is especially useful for:
+- Publication-quality figures
+- Colorblind-friendly palettes
+- Plots with many categories (>6 shapes or colors)
+
 ## Comparing Distance Metrics: UniFrac vs Bray-Curtis
 
 Different distance metrics measure different aspects of community similarity. Let's compare two common approaches:
@@ -757,7 +788,12 @@ gridExtra::grid.arrange(
 
 **Optional: Save this figure**
 
+To save this comparison as a high-resolution image, change `eval=FALSE` to `eval=TRUE` in the chunk header.
+
 ```{r save-beta-figure, eval=FALSE}
+# Create figures directory if it doesn't exist
+dir.create("figures", showWarnings = FALSE)
+
 # Save comparison of distance metrics
 beta_combined <- gridExtra::arrangeGrob(
   p_beta_treatment + labs(title = "UniFrac (Phylogenetic)"),
@@ -767,6 +803,8 @@ beta_combined <- gridExtra::arrangeGrob(
 ggsave("figures/beta_diversity_comparison.png",
        plot = beta_combined,
        width = 12, height = 5, dpi = 300)
+
+cat("✓ Figure saved to: figures/beta_diversity_comparison.png\n")
 ```
 
 **Compare the two plots:**
@@ -1061,11 +1099,18 @@ print(p_volcano)
 
 **Optional: Save this figure**
 
+To save this volcano plot for your reports, change `eval=FALSE` to `eval=TRUE` in the chunk header.
+
 ```{r save-deseq2-figure, eval=FALSE}
+# Create figures directory if it doesn't exist
+dir.create("figures", showWarnings = FALSE)
+
 # Save volcano plot
 ggsave("figures/deseq2_volcano_plot.png",
        plot = p_volcano,
        width = 8, height = 6, dpi = 300)
+
+cat("✓ Figure saved to: figures/deseq2_volcano_plot.png\n")
 ```
 
 ## Top Differentially Abundant Taxa
@@ -1278,7 +1323,7 @@ p_survival <- ggplot(alpha_survival,
 
 print(p_survival)
 
-# Statistical test
+# Statistical test - stratified by treatment
 cat("\nWilcoxon test: Shannon diversity vs Survival at Day 0\n")
 for(trt in unique(alpha_survival$treatment)) {
   subset_data <- alpha_survival %>% filter(treatment == trt)
@@ -1289,6 +1334,18 @@ for(trt in unique(alpha_survival$treatment)) {
   }
 }
 ```
+
+**Why test within each treatment group separately?**
+
+Notice we tested the diversity-survival relationship *within* each treatment group, not pooled across all groups. This is critical because:
+
+1. **Treatment affects both diversity AND survival** - Different antibiotics cause different diversity levels and different mortality rates
+2. **Simpson's Paradox** - Pooling can mask or reverse relationships that exist within groups
+3. **Biological interpretation** - The question is: "Does baseline diversity predict survival *given a treatment*?", not "Does diversity differ between treatments?"
+
+**Example:** AmpMetro mice have low diversity AND high mortality. But *within* AmpMetro-treated mice, does even lower diversity predict worse survival? That's what stratified analysis reveals.
+
+**Try it yourself (optional):** Test diversity vs survival pooled across all treatments. You'll likely get a borderline or non-significant result because the treatment effects dilute the within-treatment signal!
 
 ## Treatment Effects on Survival
 
