@@ -758,8 +758,8 @@ gridExtra::grid.arrange(
 Let's test BOTH distance metrics to see if our conclusions are robust:
 
 ```{r permanova}
-# Extract sample data
-sampledf <- as.data.frame(sample_data(ps2))
+# Extract sample data and ensure it's a proper data frame
+sampledf <- data.frame(sample_data(ps2))
 
 # Calculate both distance matrices
 unifrac_dist <- phyloseq::distance(ps2, method = "unifrac")
