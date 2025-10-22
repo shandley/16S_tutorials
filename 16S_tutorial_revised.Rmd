@@ -403,18 +403,23 @@ rare_curve_data <- rarecurve(
 
 Let's color the curves by treatment to see patterns:
 
-```{r rarefaction-by-treatment, fig.height=8}
+```{r rarefaction-by-treatment, fig.height=8, fig.width=10}
 # Create a more informative rarefaction plot colored by treatment
+# Extract treatment info in the same order as the OTU matrix rows
 sample_colors <- sample_data(ps2)$treatment
 color_palette <- c("Vehicle" = "black", "Amp" = "chocolate",
                    "Metro" = "green", "AmpMetro" = "purple")
+
+# Map each sample to its color
+sample_color_vector <- color_palette[as.character(sample_colors)]
 
 # Plot rarefaction curves (reuse the correctly oriented matrix)
 rarecurve(
   otu_matrix,
   step = 100,
-  col = color_palette[sample_colors],
-  lwd = 1,
+  col = sample_color_vector,  # Vector of colors matching sample order
+  lwd = 1.5,                  # Slightly thicker lines
+  label = FALSE,              # Don't label individual samples - too messy!
   xlab = "Number of Reads",
   ylab = "Number of ASVs Observed",
   main = "Rarefaction Curves by Treatment Group"
@@ -425,7 +430,8 @@ legend("bottomright",
        legend = names(color_palette),
        col = color_palette,
        lwd = 2,
-       title = "Treatment")
+       title = "Treatment",
+       bty = "n")  # No box around legend
 ```
 
 **What do you notice?**
