@@ -40,8 +40,9 @@ This tutorial is designed for biology students with 2-3 days of training in:
 - `16S_tutorial_revised.Rmd` - Main tutorial R Markdown document (90-100 minutes)
 - `16S_tutorial_solutions.Rmd` - Complete solutions to practice exercises
 
-### Advanced Modules
+### Advanced Modules (Optional)
 - `16S_advanced_machine_learning.Rmd` - Machine learning for survival prediction (45-60 minutes)
+- `16S_advanced_time_series.Rmd` - Temporal dynamics and recovery analysis (45 minutes)
 
 ### Documentation
 - `REVISION_SUMMARY.md` - Detailed documentation of tutorial design
@@ -85,7 +86,9 @@ See `PACKAGE_MANAGEMENT.md` for detailed installation instructions and options.
    ```
 5. **Start tutorial:** Open `16S_tutorial_revised.Rmd` and begin!
 
-**See `STUDENT_INSTRUCTIONS.md` for detailed step-by-step guide.**
+**📄 See `STUDENT_QUICK_START.Rmd` for a printable one-page quick reference guide!**
+
+**📚 See `STUDENT_INSTRUCTIONS.md` for detailed step-by-step guide.**
 
 ## For Instructors
 
@@ -117,10 +120,12 @@ source("setup_packages.R")
 ├── 16S_tutorial_revised.Rmd        # Main tutorial (core, 90-100 min)
 ├── 16S_tutorial_solutions.Rmd      # Solutions to practice exercises
 ├── 16S_advanced_machine_learning.Rmd  # ML module (45-60 min)
+├── 16S_advanced_time_series.Rmd    # Time series module (45 min)
 ├── 16S_tutorials.Rproj             # RStudio project file
 ├── setup_packages.R                # One-time package installation
 ├── README.md                       # This file
-├── STUDENT_INSTRUCTIONS.md         # Step-by-step student guide
+├── STUDENT_QUICK_START.Rmd         # One-page quick reference (printable)
+├── STUDENT_INSTRUCTIONS.md         # Detailed step-by-step guide
 ├── INSTRUCTOR_SETUP.md             # Instructor setup guide
 ├── REVISION_SUMMARY.md             # Tutorial design documentation
 ├── TUTORIAL_REDESIGN_RECOMMENDATIONS.md  # Enhancement ideas
