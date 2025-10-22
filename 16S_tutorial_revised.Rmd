@@ -953,6 +953,11 @@ cat("Testing:", ntaxa(ps_deseq), "ASVs\n")
 # Convert to DESeq2 format
 deseq_obj <- phyloseq_to_deseq2(ps_deseq, ~ treatment)
 
+# Calculate size factors using method that handles zeros
+# Standard method fails when samples have many zeros (like antibiotic-treated samples)
+# "poscounts" only uses positive counts for geometric mean
+deseq_obj <- estimateSizeFactors(deseq_obj, type = "poscounts")
+
 # Run DESeq2 analysis
 deseq_obj <- DESeq(deseq_obj, test = "Wald", fitType = "local")
 
