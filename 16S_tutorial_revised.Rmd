@@ -556,6 +556,19 @@ p_shannon <- ggplot(alpha_df,
 gridExtra::grid.arrange(p_richness, p_shannon, ncol = 2)
 ```
 
+**Optional: Save this figure**
+
+```{r save-alpha-figure, eval=FALSE}
+# Save high-resolution figure for publications/reports
+alpha_combined <- gridExtra::arrangeGrob(p_richness, p_shannon, ncol = 2)
+ggsave("figures/alpha_diversity_over_time.png",
+       plot = alpha_combined,
+       width = 12, height = 5, dpi = 300)
+
+# Note: Make sure a 'figures/' directory exists first:
+# dir.create("figures", showWarnings = FALSE)
+```
+
 **Observations:**
 - Which treatment has the **lowest** diversity?
 - Does diversity change over time?
@@ -740,6 +753,20 @@ gridExtra::grid.arrange(
   p_beta_bray + labs(title = "Bray-Curtis (Abundance-based)"),
   ncol = 2
 )
+```
+
+**Optional: Save this figure**
+
+```{r save-beta-figure, eval=FALSE}
+# Save comparison of distance metrics
+beta_combined <- gridExtra::arrangeGrob(
+  p_beta_treatment + labs(title = "UniFrac (Phylogenetic)"),
+  p_beta_bray + labs(title = "Bray-Curtis (Abundance-based)"),
+  ncol = 2
+)
+ggsave("figures/beta_diversity_comparison.png",
+       plot = beta_combined,
+       width = 12, height = 5, dpi = 300)
 ```
 
 **Compare the two plots:**
@@ -1030,6 +1057,15 @@ p_volcano <- ggplot(res_df,
   theme(legend.position = "bottom")
 
 print(p_volcano)
+```
+
+**Optional: Save this figure**
+
+```{r save-deseq2-figure, eval=FALSE}
+# Save volcano plot
+ggsave("figures/deseq2_volcano_plot.png",
+       plot = p_volcano,
+       width = 8, height = 6, dpi = 300)
 ```
 
 ## Top Differentially Abundant Taxa
