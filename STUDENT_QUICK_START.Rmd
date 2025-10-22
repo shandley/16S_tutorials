@@ -1,0 +1,195 @@
+---
+title: "16S Microbiome Tutorial - Quick Start Guide"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  html_document:
+    theme: united
+---
+
+# Quick Start Guide for Students
+
+## Before You Begin
+
+✅ **What you need:**
+- R (version 4.0 or higher) - [Download here](https://cran.r-project.org/)
+- RStudio - [Download here](https://posit.co/download/rstudio-desktop/)
+- ~500 MB free disk space
+- 90-100 minutes of focused time
+
+---
+
+## Step 1: Download the Tutorial
+
+**No git or GitHub account needed!**
+
+1. Go to: `https://github.com/shandley/16S_tutorials`
+2. Click the green **"Code"** button
+3. Click **"Download ZIP"**
+4. Extract the ZIP file to your computer
+   - **Windows:** Right-click → Extract All
+   - **Mac:** Double-click the ZIP file
+
+---
+
+## Step 2: Open the Project in RStudio
+
+1. Navigate to the extracted folder
+2. **Double-click** the file: `16S_tutorials.Rproj`
+   - This opens RStudio with the correct working directory
+   - Do NOT open R or RStudio separately!
+
+**✓ You're ready when:**
+- RStudio opens
+- The Files pane (bottom-right) shows the tutorial files
+- Console shows the project directory path
+
+---
+
+## Step 3: Install Required Packages (One Time Only)
+
+In the RStudio **Console** (bottom-left), type:
+
+```r
+source("setup_packages.R")
+```
+
+Press **Enter** and wait 5-10 minutes for packages to install.
+
+**✓ Installation successful when you see:**
+```
+SUCCESS! All packages installed correctly.
+You can now run the 16S tutorial.
+```
+
+**⚠️ If installation fails:**
+- Check your internet connection
+- Restart R: Session → Restart R
+- Try again: `source("setup_packages.R")`
+
+---
+
+## Step 4: Start the Tutorial
+
+1. In RStudio, open: `16S_tutorial_revised.Rmd`
+   - Click it in the Files pane (bottom-right)
+
+2. **Run chunks in order:**
+   - Click the green arrow (▶) on each code chunk
+   - OR: Ctrl/Cmd + Shift + Enter to run current chunk
+   - Read the text between chunks!
+
+3. **Work through in order:**
+   - Part 1: Introduction
+   - Part 2: Data Quality
+   - Part 3: Rarefaction
+   - Part 4: Alpha Diversity
+   - Part 5: Beta Diversity
+   - Part 6: Community Composition
+   - Part 7: Differential Abundance
+   - Part 8: Practice Exercises
+
+**⏱ Expected time:** 90-100 minutes
+
+---
+
+## File Overview
+
+**Start here:**
+- `16S_tutorial_revised.Rmd` - Main tutorial (core concepts)
+
+**After completing core tutorial:**
+- `16S_tutorial_solutions.Rmd` - Solutions to practice exercises
+- `16S_advanced_machine_learning.Rmd` - ML module (optional, 45-60 min)
+- `16S_advanced_time_series.Rmd` - Time series module (optional, 45 min)
+
+**Don't open these:**
+- `setup_packages.R` - Already ran this
+- `data/` folder - Tutorial loads these automatically
+- Other `.md` files - Documentation for instructors
+
+---
+
+## Common Issues
+
+**Problem: "Cannot find file"**
+- **Solution:** Make sure you opened `16S_tutorials.Rproj` first!
+
+**Problem: "Package not found"**
+- **Solution:** Re-run `source("setup_packages.R")`
+
+**Problem: Code chunks fail with errors**
+- **Solution:** Restart R (Session → Restart R) and run ALL chunks from the beginning
+
+**Problem: Plots show "NA" for treatment**
+- **Solution:** Restart R and re-run from the beginning (you have old data in memory)
+
+**Problem: Tutorial seems broken**
+- **Solution:** Download fresh copy from GitHub (you may have edited something)
+
+---
+
+## Tips for Success
+
+✅ **DO:**
+- Run chunks in order from top to bottom
+- Read the explanatory text between chunks
+- Try to understand what each line of code does
+- Attempt practice exercises yourself before checking solutions
+- Ask questions if stuck!
+
+❌ **DON'T:**
+- Skip chunks or run out of order
+- Edit the tutorial code (use a separate R script for experiments)
+- Close RStudio without saving your work
+- Panic if you get an error (restart R and try again)
+
+---
+
+## Getting Help
+
+**During the tutorial:**
+1. Read the error message carefully
+2. Check the "Common Issues" section above
+3. Restart R and re-run from the beginning
+4. Ask your instructor
+
+**After the tutorial:**
+- GitHub Issues: `https://github.com/shandley/16S_tutorials/issues`
+- Email your instructor
+
+---
+
+## What You'll Learn
+
+By the end of the core tutorial, you'll be able to:
+
+✓ Assess microbiome sequencing quality
+✓ Calculate alpha diversity metrics
+✓ Perform beta diversity analysis
+✓ Visualize microbial communities
+✓ Test statistical hypotheses (PERMANOVA)
+✓ Identify differentially abundant bacteria
+✓ Connect microbiome to biological outcomes
+
+**Advanced modules teach:**
+- Machine learning for prediction
+- Time series analysis
+- And more!
+
+---
+
+## Ready? Let's Go!
+
+1. ✅ Packages installed
+2. ✅ `16S_tutorials.Rproj` opened in RStudio
+3. ✅ `16S_tutorial_revised.Rmd` open
+4. ✅ Ready to run first chunk
+
+**Click the first green arrow and start learning!** 🎉
+
+---
+
+*Questions? Check STUDENT_INSTRUCTIONS.md for detailed step-by-step instructions.*
+
+*Having fun? Consider the advanced modules after completing the core tutorial!*

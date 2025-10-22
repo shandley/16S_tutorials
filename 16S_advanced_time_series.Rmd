@@ -1,0 +1,909 @@
+---
+title: "Advanced Module: Time Series Analysis of Microbiome Data"
+subtitle: "Analyzing Temporal Dynamics and Recovery After Antibiotics"
+author: "16S Analysis - Advanced Module"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: united
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 6)
+```
+
+---
+
+# Introduction
+
+## The Biological Question
+
+The core tutorial showed that antibiotics dramatically alter the microbiome. But microbiome data is inherently **dynamic** - communities change over time. This raises important questions:
+
+**Key Questions:**
+
+1. **How quickly** does the microbiome change after antibiotic treatment?
+2. **When** does diversity start recovering?
+3. Does the microbiome **return to baseline** after antibiotics stop?
+4. Are there **distinct phases** in the recovery process?
+5. Which **individual mice** follow unusual trajectories?
+
+Understanding temporal dynamics is critical for:
+- Designing intervention timing
+- Predicting long-term consequences
+- Identifying vulnerable periods
+- Optimizing treatment duration
+
+---
+
+## Learning Objectives
+
+By the end of this module, you will be able to:
+
+1. **Visualize** microbiome trajectories over time for individual subjects
+2. **Quantify** stability and recovery using temporal metrics
+3. **Detect** change-points in microbiome composition
+4. **Compare** recovery rates between treatment groups
+5. **Analyze** subject-specific effects (repeated measures)
+6. **Interpret** temporal patterns in biological context
+
+---
+
+## Prerequisites
+
+- Completed the core 16S tutorial
+- Understanding of:
+  - Alpha and beta diversity
+  - Treatment effects on microbiome
+  - Ordination plots
+
+**New concepts introduced:**
+- Longitudinal data analysis
+- Subject-specific effects (repeated measures)
+- Temporal autocorrelation
+- Stability metrics
+
+---
+
+## Dataset Structure
+
+Our data has a **longitudinal design:**
+
+- **7 timepoints:** Days 0, 3, 7, 13, 16, 18, 20
+- **4 treatment groups:** Vehicle, Amp, Metro, AmpMetro
+- **Same mice tracked over time** (repeated measures)
+- **Infection at Day 0** (all timepoints are post-infection)
+
+This rich temporal structure allows us to study microbiome dynamics!
+
+---
+
+# Setup
+
+```{r load-libraries}
+# Core packages from main tutorial
+library(phyloseq)
+library(tidyverse)
+library(vegan)
+library(here)
+
+# Additional packages for time series
+library(ggpubr)      # Statistical comparisons
+library(gridExtra)   # Multi-panel plots
+
+# Set random seed for reproducibility
+set.seed(12345)
+```
+
+```{r load-data}
+# Load the phyloseq object from the main tutorial
+ps0 <- readRDS(here("data", "16S_tutorial_data.RDS"))
+
+# Apply same quality filters as main tutorial
+ps1 <- prune_samples(sample_sums(ps0) >= 1000, ps0)
+
+# Calculate prevalence (accounting for OTU table orientation)
+prevalence_threshold <- 0.10 * nsamples(ps1)
+if (taxa_are_rows(ps1)) {
+  prevalence <- apply(otu_table(ps1), 1, function(x) sum(x > 0))
+} else {
+  prevalence <- apply(otu_table(ps1), 2, function(x) sum(x > 0))
+}
+ps_filtered <- prune_taxa(prevalence >= prevalence_threshold, ps1)
+
+ps2 <- subset_taxa(ps_filtered,
+                   Kingdom == "Bacteria" &
+                   Family != "mitochondria" &
+                   Class != "Chloroplast")
+
+cat("Starting dataset:", nsamples(ps2), "samples,", ntaxa(ps2), "ASVs\n")
+cat("Timepoints:", paste(unique(sample_data(ps2)$treatment_days), collapse = ", "), "\n")
+```
+
+---
+
+# Part 1: Visualizing Temporal Trajectories
+
+## Alpha Diversity Over Time
+
+Let's visualize how diversity changes for each treatment group across all timepoints.
+
+```{r alpha-trajectories}
+# Calculate alpha diversity
+alpha_div <- estimate_richness(ps2, measures = c("Observed", "Shannon"))
+metadata_df <- as.data.frame(sample_data(ps2))
+
+alpha_df <- alpha_div %>%
+  mutate(sample_id = sample_names(ps2)) %>%
+  left_join(metadata_df, by = "sample_id")
+
+# Convert timepoint to numeric for plotting
+# Extract day number from "D0", "D3", etc.
+alpha_df <- alpha_df %>%
+  mutate(day_numeric = as.numeric(gsub("D", "", treatment_days)))
+
+# Plot trajectories with mean ± SE
+p_richness_time <- ggplot(alpha_df,
+                          aes(x = day_numeric, y = Observed,
+                              color = treatment, group = treatment)) +
+  stat_summary(fun = mean, geom = "line", size = 1.2) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar",
+               width = 0.5, linewidth = 0.8) +
+  geom_jitter(alpha = 0.2, width = 0.3, size = 1) +  # Individual samples
+  labs(
+    title = "Alpha Diversity Trajectories Over Time",
+    subtitle = "Mean ± SE with individual samples shown",
+    x = "Days Post-Infection",
+    y = "Observed ASVs (Richness)",
+    color = "Treatment"
+  ) +
+  scale_color_manual(values = c("Vehicle" = "black",
+                                "Amp" = "chocolate",
+                                "Metro" = "green",
+                                "AmpMetro" = "purple")) +
+  theme_bw() +
+  theme(legend.position = "right")
+
+print(p_richness_time)
+```
+
+**Interpretation Questions:**
+
+1. When does diversity drop most dramatically?
+2. Does diversity recover to baseline levels?
+3. Which treatment shows the most severe long-term impact?
+4. Is there evidence of recovery starting?
+
+---
+
+## Individual Mouse Trajectories
+
+Let's look at individual mice to see variation in responses:
+
+```{r individual-trajectories, fig.height=8}
+# Get sample IDs to identify individual mice
+# Mice are identified by their sample number (e.g., "101", "102")
+alpha_df <- alpha_df %>%
+  mutate(mouse_id = gsub(".*\\.D\\d+\\.", "", sample_id))  # Extract mouse identifier
+
+# Plot a subset of mice from each treatment
+# Select 5 mice per treatment for clarity
+set.seed(123)
+mice_to_plot <- alpha_df %>%
+  group_by(treatment) %>%
+  summarize(sample_mice = list(unique(mouse_id)[1:min(5, length(unique(mouse_id)))])) %>%
+  unnest(sample_mice)
+
+alpha_subset <- alpha_df %>%
+  filter(mouse_id %in% mice_to_plot$sample_mice)
+
+p_individual <- ggplot(alpha_subset,
+                       aes(x = day_numeric, y = Observed,
+                           group = mouse_id, color = treatment)) +
+  geom_line(alpha = 0.6, size = 0.8) +
+  geom_point(alpha = 0.6, size = 2) +
+  facet_wrap(~treatment, nrow = 2) +
+  scale_color_manual(values = c("Vehicle" = "black",
+                                "Amp" = "chocolate",
+                                "Metro" = "green",
+                                "AmpMetro" = "purple")) +
+  labs(
+    title = "Individual Mouse Trajectories",
+    subtitle = "5 mice per treatment group",
+    x = "Days Post-Infection",
+    y = "Observed ASVs (Richness)"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+print(p_individual)
+```
+
+**Biological Insights:**
+
+- **Vehicle:** Relatively stable trajectories
+- **Antibiotic treatments:** Sharp drops followed by variable recovery
+- **Individual variation:** Some mice recover better than others
+- **Death events:** Some trajectories end early (mice died)
+
+---
+
+# Part 2: Quantifying Stability and Change
+
+## Rate of Change
+
+Calculate how quickly diversity is changing at each timepoint.
+
+```{r rate-of-change}
+# Calculate rate of change for each mouse
+# Sort by mouse and timepoint first
+alpha_sorted <- alpha_df %>%
+  arrange(mouse_id, day_numeric)
+
+# Calculate difference from previous timepoint for each mouse
+alpha_change <- alpha_sorted %>%
+  group_by(mouse_id, treatment) %>%
+  arrange(day_numeric) %>%
+  mutate(
+    richness_change = Observed - lag(Observed),
+    time_interval = day_numeric - lag(day_numeric),
+    rate_of_change = richness_change / time_interval
+  ) %>%
+  filter(!is.na(rate_of_change))  # Remove first timepoint (no previous)
+
+# Visualize rate of change
+p_rate <- ggplot(alpha_change,
+                 aes(x = day_numeric, y = rate_of_change,
+                     color = treatment)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  stat_summary(fun = mean, geom = "line", size = 1.2) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.5) +
+  scale_color_manual(values = c("Vehicle" = "black",
+                                "Amp" = "chocolate",
+                                "Metro" = "green",
+                                "AmpMetro" = "purple")) +
+  labs(
+    title = "Rate of Change in Alpha Diversity",
+    subtitle = "Positive = increasing diversity, Negative = decreasing",
+    x = "Days Post-Infection",
+    y = "Rate of Change (ASVs per day)",
+    color = "Treatment"
+  ) +
+  theme_bw()
+
+print(p_rate)
+```
+
+**Interpretation:**
+
+- **Negative rate:** Diversity is declining
+- **Positive rate:** Diversity is recovering
+- **Zero rate:** Stable state
+- **Change-point:** When rate switches from negative to positive
+
+**Question:** When does recovery begin for each treatment?
+
+---
+
+## Stability Index
+
+Calculate how stable each mouse's microbiome is across timepoints.
+
+```{r stability-index}
+# Calculate coefficient of variation (CV) for each mouse
+# CV = standard deviation / mean
+# Lower CV = more stable
+
+stability <- alpha_df %>%
+  group_by(mouse_id, treatment) %>%
+  summarize(
+    mean_richness = mean(Observed, na.rm = TRUE),
+    sd_richness = sd(Observed, na.rm = TRUE),
+    cv_richness = sd_richness / mean_richness,
+    n_timepoints = n(),
+    .groups = "drop"
+  ) %>%
+  filter(n_timepoints >= 3)  # Need at least 3 timepoints
+
+# Visualize stability by treatment
+p_stability <- ggplot(stability,
+                      aes(x = treatment, y = cv_richness, fill = treatment)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.5, size = 2) +
+  stat_compare_means(method = "kruskal.test", label.y = max(stability$cv_richness) * 1.1) +
+  scale_fill_manual(values = c("Vehicle" = "black",
+                               "Amp" = "chocolate",
+                               "Metro" = "green",
+                               "AmpMetro" = "purple")) +
+  labs(
+    title = "Microbiome Stability by Treatment",
+    subtitle = "Lower CV = more stable over time",
+    x = "Treatment",
+    y = "Coefficient of Variation (Richness)",
+    caption = "CV = Standard Deviation / Mean"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+print(p_stability)
+```
+
+**Biological Meaning:**
+
+- **Low CV:** Microbiome stays consistent despite perturbations
+- **High CV:** Microbiome is highly variable/unstable
+- **Antibiotics increase CV:** Disruption causes instability
+- **Stability correlates with health:** Stable microbiomes may be more resilient
+
+---
+
+# Part 3: Beta Diversity Trajectories
+
+## Ordination of All Timepoints
+
+Visualize how community composition changes over time in ordination space.
+
+```{r beta-trajectories}
+# Calculate UniFrac distance
+unifrac_dist <- phyloseq::distance(ps2, method = "unifrac")
+
+# Ordination
+ord <- ordinate(ps2, method = "PCoA", distance = unifrac_dist)
+eigenvalues <- ord$values$Eigenvalues
+variance <- eigenvalues / sum(eigenvalues) * 100
+
+# Create ordination plot colored by timepoint
+metadata_plot <- as.data.frame(sample_data(ps2))
+metadata_plot$day_numeric <- as.numeric(gsub("D", "", metadata_plot$treatment_days))
+
+ord_df <- as.data.frame(ord$vectors[, 1:2])
+ord_df$sample_id <- rownames(ord_df)
+ord_df <- ord_df %>%
+  left_join(metadata_plot %>% select(sample_id, treatment, day_numeric),
+            by = "sample_id")
+
+p_ord_time <- ggplot(ord_df, aes(x = Axis.1, y = Axis.2,
+                                 color = day_numeric)) +
+  geom_point(size = 3, alpha = 0.7) +
+  facet_wrap(~treatment, nrow = 2) +
+  scale_color_gradient(low = "blue", high = "red",
+                      name = "Day") +
+  labs(
+    title = "Beta Diversity Trajectories Over Time",
+    subtitle = "Each point = one sample, color = timepoint",
+    x = paste0("PC1 (", round(variance[1], 1), "%)"),
+    y = paste0("PC2 (", round(variance[2], 1), "%)")
+  ) +
+  theme_bw()
+
+print(p_ord_time)
+```
+
+**Patterns to Look For:**
+
+1. **Temporal progression:** Do samples move through ordination space over time?
+2. **Recovery paths:** Do late timepoints return toward early timepoints?
+3. **Treatment divergence:** How far do antibiotic samples move from vehicle?
+4. **Directionality:** Is there a consistent direction of change?
+
+---
+
+## Distance from Baseline
+
+Quantify how far each sample has moved from its baseline (Day 0) composition.
+
+```{r distance-from-baseline}
+# Subset to Day 0 and later timepoints separately
+ps_d0 <- subset_samples(ps2, treatment_days == "D0")
+ps_later <- subset_samples(ps2, treatment_days != "D0")
+
+# Get sample metadata
+metadata_all <- as.data.frame(sample_data(ps2))
+
+# We'll calculate for each mouse how far they are from their own baseline
+# This is complex with phyloseq, so we'll use a simpler approach:
+# Calculate mean distance from all Day 0 samples of same treatment
+
+# Calculate distances
+dist_matrix <- as.matrix(unifrac_dist)
+
+# For each non-baseline sample, find distance to baseline samples
+baseline_samples <- sample_names(ps_d0)
+later_samples <- sample_names(ps_later)
+
+# Calculate mean distance to baseline for each sample
+baseline_dist <- data.frame(
+  sample_id = later_samples,
+  mean_dist_to_baseline = sapply(later_samples, function(s) {
+    # Get treatment for this sample
+    trt <- metadata_all$treatment[metadata_all$sample_id == s]
+    # Find baseline samples with same treatment
+    baseline_same_trt <- sample_names(subset_samples(ps_d0, treatment == trt))
+    # Calculate mean distance
+    if (length(baseline_same_trt) > 0) {
+      mean(dist_matrix[s, baseline_same_trt], na.rm = TRUE)
+    } else {
+      NA
+    }
+  })
+)
+
+# Add metadata
+baseline_dist <- baseline_dist %>%
+  left_join(metadata_all %>% select(sample_id, treatment, treatment_days),
+            by = "sample_id") %>%
+  mutate(day_numeric = as.numeric(gsub("D", "", treatment_days)))
+
+# Plot distance over time
+p_dist_baseline <- ggplot(baseline_dist,
+                          aes(x = day_numeric, y = mean_dist_to_baseline,
+                              color = treatment, group = treatment)) +
+  stat_summary(fun = mean, geom = "line", size = 1.2) +
+  stat_summary(fun = mean, geom = "point", size = 3) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.5) +
+  scale_color_manual(values = c("Vehicle" = "black",
+                                "Amp" = "chocolate",
+                                "Metro" = "green",
+                                "AmpMetro" = "purple")) +
+  labs(
+    title = "Distance from Baseline Community Composition",
+    subtitle = "Higher values = more different from Day 0",
+    x = "Days Post-Infection",
+    y = "Mean UniFrac Distance to Baseline",
+    color = "Treatment"
+  ) +
+  theme_bw()
+
+print(p_dist_baseline)
+```
+
+**Recovery Assessment:**
+
+- **Increasing distance:** Community moving away from baseline
+- **Decreasing distance:** Community recovering toward baseline
+- **Plateau:** New stable state reached (may not match baseline)
+
+**Question:** Do any treatments show evidence of recovery (decreasing distance)?
+
+---
+
+# Part 4: Statistical Analysis of Temporal Effects
+
+## Repeated Measures Consideration
+
+**Important:** Our data has repeated measures (same mice over time), which creates:
+
+- **Temporal autocorrelation:** Samples from same mouse are more similar
+- **Subject-specific effects:** Each mouse has its own trajectory
+- **Non-independence:** Violates standard statistical assumptions
+
+**Proper analysis requires:**
+- Mixed-effects models (account for repeated measures)
+- Subject-specific random effects
+- Or... treat each timepoint separately (simpler but less powerful)
+
+---
+
+## Timepoint-Specific Testing
+
+Let's test if treatments differ at each timepoint separately:
+
+```{r timepoint-testing}
+# Test each timepoint
+timepoints <- unique(metadata_all$treatment_days)
+timepoints <- timepoints[timepoints != "D0"]  # Skip baseline
+
+permanova_results <- data.frame(
+  timepoint = character(),
+  R2 = numeric(),
+  p_value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (tp in timepoints) {
+  # Subset to this timepoint
+  ps_tp <- subset_samples(ps2, treatment_days == tp)
+
+  # Need at least 10 samples
+  if (nsamples(ps_tp) < 10) next
+
+  # Calculate distance
+  dist_tp <- phyloseq::distance(ps_tp, method = "unifrac")
+
+  # Get metadata
+  sampledf_tp <- data.frame(sample_data(ps_tp))
+
+  # PERMANOVA
+  set.seed(12345)
+  perm <- adonis2(dist_tp ~ treatment,
+                  data = sampledf_tp,
+                  permutations = 999)
+
+  # Store results
+  permanova_results <- rbind(permanova_results,
+                            data.frame(
+                              timepoint = tp,
+                              R2 = perm$R2[1],
+                              p_value = perm$`Pr(>F)`[1]
+                            ))
+}
+
+# Add numeric day
+permanova_results$day_numeric <- as.numeric(gsub("D", "", permanova_results$timepoint))
+
+# Display results
+cat("PERMANOVA Results by Timepoint:\n")
+print(permanova_results %>% arrange(day_numeric))
+
+# Visualize effect size over time
+p_permanova_time <- ggplot(permanova_results,
+                           aes(x = day_numeric, y = R2)) +
+  geom_line(size = 1.2, color = "steelblue") +
+  geom_point(aes(size = -log10(p_value)), color = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    title = "Treatment Effect Size Over Time",
+    subtitle = "R² from PERMANOVA at each timepoint",
+    x = "Days Post-Infection",
+    y = "R² (Proportion of Variance Explained)",
+    size = "-log10(p-value)"
+  ) +
+  theme_bw()
+
+print(p_permanova_time)
+```
+
+**Interpretation:**
+
+- **R² = strength of treatment effect** on community composition
+- **Larger points = more significant** (smaller p-values)
+- **Peak R²:** When treatments are most different
+- **Declining R²:** Evidence of recovery/convergence?
+
+---
+
+# Part 5: Change-Point Detection
+
+## Identifying When Recovery Begins
+
+A "change-point" is when the trend changes direction (e.g., from declining to recovering).
+
+```{r changepoint-simple}
+# Calculate mean richness over time for each treatment
+mean_richness <- alpha_df %>%
+  group_by(treatment, day_numeric) %>%
+  summarize(
+    mean_obs = mean(Observed, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(treatment, day_numeric)
+
+# Simple change-point detection: find minimum
+changepoints <- mean_richness %>%
+  group_by(treatment) %>%
+  summarize(
+    lowest_day = day_numeric[which.min(mean_obs)],
+    lowest_richness = min(mean_obs),
+    .groups = "drop"
+  )
+
+cat("Estimated Change-Points (Lowest Diversity):\n")
+print(changepoints)
+
+# Visualize with change-points marked
+p_changepoint <- ggplot(mean_richness,
+                        aes(x = day_numeric, y = mean_obs,
+                            color = treatment, group = treatment)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  geom_point(data = changepoints,
+             aes(x = lowest_day, y = lowest_richness),
+             size = 6, shape = 4, stroke = 2, color = "red") +
+  scale_color_manual(values = c("Vehicle" = "black",
+                                "Amp" = "chocolate",
+                                "Metro" = "green",
+                                "AmpMetro" = "purple")) +
+  labs(
+    title = "Change-Point Detection: When Does Recovery Begin?",
+    subtitle = "Red X marks lowest diversity timepoint",
+    x = "Days Post-Infection",
+    y = "Mean Observed ASVs",
+    color = "Treatment"
+  ) +
+  theme_bw()
+
+print(p_changepoint)
+```
+
+**Biological Interpretation:**
+
+- **Change-point = nadir:** Lowest point before recovery
+- **Early change-point:** Quick recovery
+- **Late change-point:** Prolonged suppression
+- **No recovery:** Diversity never increases after change-point
+
+---
+
+# Part 6: Synthesis and Biological Insights
+
+## Summary Metrics Table
+
+```{r summary-table}
+# Create comprehensive summary table
+summary_table <- alpha_df %>%
+  group_by(treatment) %>%
+  summarize(
+    n_samples = n(),
+    baseline_richness = mean(Observed[day_numeric == 0], na.rm = TRUE),
+    min_richness = min(Observed, na.rm = TRUE),
+    final_richness = mean(Observed[day_numeric == max(day_numeric)], na.rm = TRUE),
+    percent_loss = (baseline_richness - min_richness) / baseline_richness * 100,
+    percent_recovery = (final_richness - min_richness) / (baseline_richness - min_richness) * 100,
+    .groups = "drop"
+  )
+
+cat("Summary of Microbiome Dynamics by Treatment:\n\n")
+print(summary_table, digits = 1)
+```
+
+**Table Interpretation:**
+
+- **Baseline richness:** Starting diversity (Day 0)
+- **Min richness:** Lowest diversity reached
+- **Final richness:** Diversity at end of study
+- **Percent loss:** How much diversity was lost
+- **Percent recovery:** How much lost diversity was regained
+
+---
+
+## Key Biological Questions Answered
+
+### 1. How quickly does the microbiome change after antibiotics?
+
+**Answer based on rate of change analysis:**
+- Fastest decline: Days 0-7
+- Antibiotic effect visible by Day 3
+- AmpMetro causes most rapid decline
+
+### 2. When does diversity start recovering?
+
+**Answer based on change-point detection:**
+- Varies by treatment (see change-point plot)
+- Some treatments may not recover within study duration
+
+### 3. Does the microbiome return to baseline?
+
+**Answer based on distance from baseline:**
+- Check final distance vs initial distance
+- Most treatments show incomplete recovery
+- New stable state may differ from baseline
+
+### 4. Are there distinct phases?
+
+**Answer based on trajectory shapes:**
+- **Phase 1:** Initial decline (Days 0-7)
+- **Phase 2:** Nadir/plateau (Days 7-13)
+- **Phase 3:** Recovery attempt (Days 13-20)
+
+### 5. Which individuals follow unusual trajectories?
+
+**Answer based on individual plots:**
+- High variability in individual responses
+- Some mice die (trajectories end early)
+- Some mice show resilience (maintain diversity)
+
+---
+
+# Part 7: Clinical and Research Implications
+
+## What We Learned About Antibiotic Effects
+
+**Temporal insights that cross-sectional studies would miss:**
+
+1. **Timing matters:** Impact evolves over days/weeks
+2. **Recovery is incomplete:** Even after antibiotics stop
+3. **Individual variation:** Some mice resilient, others vulnerable
+4. **New stable states:** May not return to original composition
+5. **Critical windows:** Certain timepoints show maximal vulnerability
+
+---
+
+## Experimental Design Lessons
+
+**For future microbiome studies:**
+
+✅ **DO:**
+- Include multiple timepoints (not just pre/post)
+- Sample frequently during perturbation
+- Continue sampling after treatment ends
+- Track individual subjects over time
+
+❌ **DON'T:**
+- Rely on single post-treatment timepoint
+- Assume effects are immediate
+- Ignore individual trajectories
+- Stop sampling too soon
+
+---
+
+## Intervention Opportunities
+
+**Based on temporal patterns:**
+
+1. **Probiotics:** When to administer for maximum effect?
+   - During decline? (competitive resistance)
+   - At nadir? (colonization opportunity)
+   - During recovery? (boost natural restoration)
+
+2. **Multiple antibiotic courses:**
+   - Allow recovery time between courses?
+   - Cumulative effects?
+
+3. **Biomarker development:**
+   - Early warning signs (rapid decline = bad prognosis?)
+   - Recovery predictions (trajectory shape)
+
+---
+
+# Part 8: Extensions and Advanced Topics
+
+## Try It Yourself
+
+```{r exercises, eval=FALSE}
+# Exercise 1: Focus on survivors only
+# Do surviving mice show different temporal patterns?
+ps_survivors <- subset_samples(ps2, survival_status == "Alive")
+# Repeat trajectory analysis
+
+# Exercise 2: Analyze Shannon diversity instead of richness
+# Does it show the same temporal patterns?
+
+# Exercise 3: Look at specific phyla over time
+# E.g., Bacteroidetes vs Firmicutes ratio
+ps_phylum <- tax_glom(ps2, taxrank = "Phylum")
+# Extract and plot over time
+
+# Exercise 4: Compare early vs late death
+# Do mice that die early show different trajectories than those who survive longer?
+```
+
+---
+
+## Advanced Statistical Approaches
+
+For more rigorous analysis, consider:
+
+### 1. Linear Mixed Effects Models
+
+```{r lme-example, eval=FALSE}
+# Would require lme4 package
+library(lme4)
+
+# Model with random intercept for each mouse
+model <- lmer(Observed ~ treatment * day_numeric + (1|mouse_id),
+              data = alpha_df)
+summary(model)
+
+# Tests treatment effects while accounting for repeated measures
+```
+
+### 2. Generalized Additive Models (GAM)
+
+```{r gam-example, eval=FALSE}
+# Would require mgcv package
+library(mgcv)
+
+# Smooth trajectories for each treatment
+gam_model <- gam(Observed ~ treatment + s(day_numeric, by = treatment),
+                 data = alpha_df)
+plot(gam_model)
+
+# Captures non-linear temporal trends
+```
+
+### 3. Trajectory Clustering
+
+```{r clustering-example, eval=FALSE}
+# Group mice by similar trajectory shapes
+# Identify distinct recovery patterns
+# Relate trajectory clusters to outcomes
+```
+
+---
+
+# Summary
+
+## Key Takeaways
+
+1. **Microbiomes are dynamic** - single timepoint analysis misses critical information
+
+2. **Recovery is complex:**
+   - Not all diversity is regained
+   - New stable states may emerge
+   - Individual variation is substantial
+
+3. **Temporal metrics provide insights:**
+   - Rate of change
+   - Stability indices
+   - Distance from baseline
+   - Change-point detection
+
+4. **Repeated measures matter:**
+   - Subject-specific effects are real
+   - Standard tests may be inappropriate
+   - Mixed models are more appropriate
+
+5. **Biological implications:**
+   - Intervention timing is critical
+   - Recovery can be incomplete
+   - Long-term consequences of short-term perturbations
+
+---
+
+## Connections to Other Modules
+
+**This module complements:**
+
+| Core Tutorial | Time Series Extension |
+|--------------|---------------------|
+| Compare treatments at Day 7 | Track changes across all days |
+| Alpha diversity snapshot | Alpha diversity trajectory |
+| Beta diversity patterns | Beta diversity dynamics |
+| Which taxa differ? | When do taxa change? |
+
+**Machine Learning Module:**
+- ML uses baseline to predict outcomes
+- Time series explains HOW baseline becomes outcome
+- Combine both: predict from trajectories!
+
+---
+
+## Additional Resources
+
+**Time Series Analysis:**
+- [Microbiome Time Series Review](https://doi.org/10.1038/s41579-018-0119-x)
+- [Repeated Measures in Microbiome Studies](https://doi.org/10.1186/s40168-019-0668-3)
+
+**R Packages:**
+- `lme4` - Linear mixed effects models
+- `mgcv` - Generalized additive models
+- `nlme` - Nonlinear mixed effects
+
+**Statistical Methods:**
+- [Mixed Models for Microbiome Data](https://doi.org/10.3389/fmicb.2019.01682)
+
+---
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```
+
+---
+
+**Congratulations!** You've completed the Time Series advanced module. You now know how to:
+
+✅ Visualize microbiome trajectories over time
+✅ Quantify stability and recovery dynamics
+✅ Detect change-points in temporal data
+✅ Analyze repeated measures appropriately
+✅ Connect temporal patterns to biological outcomes
+
+**Next steps:**
+
+- Apply these methods to your own longitudinal data
+- Explore the exercise questions
+- Consider advanced mixed-effects modeling
+- Combine with machine learning for trajectory-based prediction
+
+---
+
+*Generated for the 16S rRNA Microbiome Analysis Tutorial Series*
