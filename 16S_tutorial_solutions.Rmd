@@ -51,7 +51,11 @@ ps1 <- prune_samples(sample_sums(ps0) >= 1000, ps0)
 
 # Remove low-abundance ASVs (present in <10% of samples)
 prevalence_threshold <- 0.10 * nsamples(ps1)
-prevalence <- apply(otu_table(ps1), 1, function(x) sum(x > 0))
+if (taxa_are_rows(ps1)) {
+  prevalence <- apply(otu_table(ps1), 1, function(x) sum(x > 0))
+} else {
+  prevalence <- apply(otu_table(ps1), 2, function(x) sum(x > 0))
+}
 ps_filtered <- prune_taxa(prevalence >= prevalence_threshold, ps1)
 
 # Remove unwanted taxa

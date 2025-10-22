@@ -95,8 +95,16 @@ ps0 <- readRDS(here("data", "16S_tutorial_data.RDS"))
 
 # Apply same quality filters as main tutorial
 ps1 <- prune_samples(sample_sums(ps0) >= 1000, ps0)
+
+# Calculate prevalence (accounting for OTU table orientation)
 prevalence_threshold <- 0.10 * nsamples(ps1)
-prevalence <- apply(otu_table(ps1), 1, function(x) sum(x > 0))
+if (taxa_are_rows(ps1)) {
+  # Taxa are rows: apply across columns (samples)
+  prevalence <- apply(otu_table(ps1), 1, function(x) sum(x > 0))
+} else {
+  # Taxa are columns: apply across rows (samples)
+  prevalence <- apply(otu_table(ps1), 2, function(x) sum(x > 0))
+}
 ps_filtered <- prune_taxa(prevalence >= prevalence_threshold, ps1)
 
 ps2 <- subset_taxa(ps_filtered,
