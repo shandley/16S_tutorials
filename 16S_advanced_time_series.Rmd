@@ -136,7 +136,7 @@ Let's visualize how diversity changes for each treatment group across all timepo
 ```{r alpha-trajectories}
 # Calculate alpha diversity
 alpha_div <- estimate_richness(ps2, measures = c("Observed", "Shannon"))
-metadata_df <- as.data.frame(sample_data(ps2))
+metadata_df <- data.frame(sample_data(ps2))
 
 alpha_df <- alpha_div %>%
   mutate(sample_id = sample_names(ps2)) %>%
@@ -360,7 +360,8 @@ eigenvalues <- ord$values$Eigenvalues
 variance <- eigenvalues / sum(eigenvalues) * 100
 
 # Create ordination plot colored by timepoint
-metadata_plot <- as.data.frame(sample_data(ps2))
+# Use data.frame() for clean conversion
+metadata_plot <- data.frame(sample_data(ps2))
 metadata_plot$day_numeric <- as.numeric(gsub("D", "", metadata_plot$treatment_days))
 
 ord_df <- as.data.frame(ord$vectors[, 1:2])
@@ -405,7 +406,7 @@ ps_d0 <- subset_samples(ps2, treatment_days == "D0")
 ps_later <- subset_samples(ps2, treatment_days != "D0")
 
 # Get sample metadata
-metadata_all <- as.data.frame(sample_data(ps2))
+metadata_all <- data.frame(sample_data(ps2))
 
 # We'll calculate for each mouse how far they are from their own baseline
 # This is complex with phyloseq, so we'll use a simpler approach:
