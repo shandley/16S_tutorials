@@ -1,0 +1,761 @@
+---
+title: "Advanced Module: Machine Learning for Microbiome Prediction"
+subtitle: "Predicting Survival from Baseline Microbiome Data"
+author: "16S Analysis - Advanced Module"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: united
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 6)
+```
+
+---
+
+# Introduction
+
+## The Biological Question
+
+In the core tutorial, we saw that antibiotic treatment dramatically altered the gut microbiome and influenced viral infection outcomes. But this raises an intriguing question:
+
+**Can we predict which mice will survive based solely on their baseline (Day 0) microbiome - before any infection or treatment?**
+
+If yes, this suggests:
+- Pre-existing microbiome composition influences disease outcomes
+- We could identify at-risk individuals before symptoms appear
+- Preventive interventions (probiotics, diet) might help
+
+If no, this suggests:
+- Microbiome changes DURING infection drive outcomes
+- Treatment effects matter more than baseline state
+
+Let's use **machine learning** to find out!
+
+---
+
+## Learning Objectives
+
+By the end of this module, you will be able to:
+
+1. **Build** random forest classifiers for microbiome data
+2. **Evaluate** model performance using cross-validation
+3. **Interpret** feature importance to identify key bacteria
+4. **Visualize** ROC curves and confusion matrices
+5. **Distinguish** between prediction and causation
+6. **Understand** when machine learning is appropriate for microbiome data
+
+---
+
+## Prerequisites
+
+- Completed the core 16S tutorial
+- Basic understanding of:
+  - Alpha and beta diversity
+  - Microbiome data structure
+  - Basic statistics (p-values, significance)
+
+**New R packages needed:**
+
+```{r check-packages, eval=FALSE}
+# Install if needed (run once)
+install.packages("randomForest")
+install.packages("caret")
+install.packages("pROC")
+```
+
+---
+
+# Setup
+
+```{r load-libraries}
+# Core packages from main tutorial
+library(phyloseq)
+library(tidyverse)
+library(here)
+
+# Machine learning packages
+library(randomForest)  # Random forest algorithm
+library(caret)         # Cross-validation and model evaluation
+library(pROC)          # ROC curves
+
+# Set random seed for reproducibility
+set.seed(12345)
+```
+
+```{r load-data}
+# Load the phyloseq object from the main tutorial
+ps0 <- readRDS(here("data", "16S_tutorial_data.RDS"))
+
+# Apply same quality filters as main tutorial
+ps1 <- prune_samples(sample_sums(ps0) >= 1000, ps0)
+prevalence_threshold <- 0.10 * nsamples(ps1)
+prevalence <- apply(otu_table(ps1), 1, function(x) sum(x > 0))
+ps_filtered <- prune_taxa(prevalence >= prevalence_threshold, ps1)
+
+ps2 <- subset_taxa(ps_filtered,
+                   Kingdom == "Bacteria" &
+                   Family != "mitochondria" &
+                   Class != "Chloroplast")
+
+cat("Starting dataset:", nsamples(ps2), "samples,", ntaxa(ps2), "ASVs\n")
+```
+
+---
+
+# Part 1: Data Preparation
+
+## Extract Baseline Samples
+
+We're only interested in **Day 0** samples - before infection and before treatments have had time to work.
+
+```{r subset-baseline}
+# Subset to Day 0 only
+ps_d0 <- subset_samples(ps2, treatment_days == "D0")
+
+cat("Baseline samples (Day 0):\n")
+cat("Total:", nsamples(ps_d0), "\n\n")
+
+# Check survival status distribution
+survival_counts <- table(sample_data(ps_d0)$survival_status)
+cat("Survival outcomes:\n")
+print(survival_counts)
+cat("\nClass balance:",
+    round(min(survival_counts) / max(survival_counts) * 100, 1),
+    "% (minority class)\n")
+```
+
+**Important:** Machine learning works best with balanced classes. If severely imbalanced (e.g., 10% vs 90%), we may need to adjust our approach.
+
+---
+
+## Create Feature Matrix
+
+Machine learning algorithms need a matrix where:
+- **Rows** = samples (mice)
+- **Columns** = features (bacterial ASVs)
+- **Values** = abundances
+
+```{r create-feature-matrix}
+# Extract ASV count table
+# Rows should be samples, columns should be ASVs
+otu_mat <- as(otu_table(ps_d0), "matrix")
+
+# Check orientation and transpose if needed
+if (taxa_are_rows(ps_d0)) {
+  otu_mat <- t(otu_mat)  # Samples as rows, ASVs as columns
+}
+
+cat("Feature matrix dimensions:\n")
+cat("Samples (rows):", nrow(otu_mat), "\n")
+cat("Features/ASVs (columns):", ncol(otu_mat), "\n\n")
+
+# Preview
+cat("First 3 samples, first 5 ASVs:\n")
+otu_mat[1:3, 1:5]
+```
+
+## Normalize Abundances
+
+Raw counts vary widely between samples due to sequencing depth. We'll use **relative abundance** (proportions).
+
+```{r normalize}
+# Convert to relative abundance (proportions that sum to 1 per sample)
+otu_rel <- otu_mat / rowSums(otu_mat)
+
+# Verify normalization
+cat("Row sums (should all be 1.0):\n")
+head(rowSums(otu_rel))
+
+# Replace feature matrix with normalized version
+otu_mat <- otu_rel
+```
+
+---
+
+## Prepare Response Variable
+
+```{r prepare-response}
+# Extract metadata
+metadata <- as.data.frame(sample_data(ps_d0))
+
+# Ensure samples are in same order
+if (!all(rownames(otu_mat) == rownames(metadata))) {
+  stop("Sample order mismatch between OTU table and metadata!")
+}
+
+# Create outcome variable
+# Convert to factor for classification
+outcome <- factor(metadata$survival_status,
+                  levels = c("Alive", "Dead"))
+
+cat("Outcome variable:\n")
+print(table(outcome))
+```
+
+---
+
+# Part 2: Build Random Forest Model
+
+## What is a Random Forest?
+
+**Random Forest** is an ensemble learning method that:
+
+1. Builds many decision trees (a "forest")
+2. Each tree uses a random subset of features
+3. Each tree votes on the prediction
+4. Final prediction = majority vote
+
+**Advantages for microbiome data:**
+- Handles many features (we have `r ncol(otu_mat)` ASVs!)
+- Robust to outliers
+- Provides feature importance
+- No assumptions about data distribution
+- Non-linear relationships captured
+
+---
+
+## Train Initial Model
+
+```{r train-rf}
+# Build random forest classifier
+# ntree = number of trees to grow
+# mtry = number of features to try at each split
+# importance = calculate feature importance
+
+cat("Training random forest model...\n")
+rf_model <- randomForest(
+  x = otu_mat,           # Feature matrix
+  y = outcome,           # Response variable
+  ntree = 500,           # Grow 500 trees
+  importance = TRUE,     # Calculate feature importance
+  proximity = FALSE      # Don't calculate sample proximity (saves memory)
+)
+
+print(rf_model)
+```
+
+**Understanding the output:**
+
+- **OOB estimate of error rate:** Out-of-bag error (built-in cross-validation)
+- **Confusion matrix:** Predicted vs actual outcomes
+- **Class error:** Error rate for each outcome class
+
+**Question:** What is the overall accuracy? How does it compare to random guessing?
+
+---
+
+## Evaluate Model Performance
+
+```{r evaluate-performance}
+# Get predictions and probabilities
+predictions <- predict(rf_model, otu_mat, type = "response")
+probabilities <- predict(rf_model, otu_mat, type = "prob")
+
+# Confusion matrix
+conf_mat <- confusionMatrix(predictions, outcome, positive = "Dead")
+print(conf_mat)
+
+# Extract key metrics
+cat("\n=== Key Performance Metrics ===\n")
+cat("Accuracy:", round(conf_mat$overall["Accuracy"], 3), "\n")
+cat("Sensitivity (recall):", round(conf_mat$byClass["Sensitivity"], 3), "\n")
+cat("Specificity:", round(conf_mat$byClass["Specificity"], 3), "\n")
+cat("Balanced Accuracy:", round(conf_mat$byClass["Balanced Accuracy"], 3), "\n")
+```
+
+### Metrics Explained
+
+- **Accuracy:** Overall correct predictions (but misleading if classes are imbalanced!)
+- **Sensitivity (Recall):** Of those who died, how many did we predict correctly?
+- **Specificity:** Of those who survived, how many did we predict correctly?
+- **Balanced Accuracy:** Average of sensitivity and specificity (better for imbalanced data)
+
+---
+
+## ROC Curve
+
+The **Receiver Operating Characteristic (ROC) curve** shows the trade-off between true positive rate and false positive rate.
+
+```{r roc-curve}
+# Calculate ROC curve
+# We predict probability of "Dead"
+roc_obj <- roc(outcome, probabilities[, "Dead"])
+
+# Plot ROC curve
+plot(roc_obj,
+     main = "ROC Curve: Baseline Microbiome Predicting Survival",
+     col = "steelblue",
+     lwd = 2,
+     print.auc = TRUE,
+     print.auc.y = 0.4)
+
+# Add diagonal reference line (random classifier)
+abline(a = 0, b = 1, lty = 2, col = "gray50")
+```
+
+**Interpreting AUC (Area Under Curve):**
+
+- AUC = 0.5: Random guessing (no predictive power)
+- AUC = 0.7-0.8: Acceptable discrimination
+- AUC = 0.8-0.9: Excellent discrimination
+- AUC = 1.0: Perfect classification
+
+**Question:** Based on the AUC, can we predict survival from baseline microbiome?
+
+---
+
+# Part 3: Feature Importance
+
+## Which Bacteria Matter Most?
+
+```{r feature-importance}
+# Extract feature importance
+# MeanDecreaseAccuracy: How much accuracy drops when this feature is removed
+# MeanDecreaseGini: How much this feature reduces impurity in trees
+
+importance_df <- as.data.frame(importance(rf_model)) %>%
+  rownames_to_column("ASV") %>%
+  arrange(desc(MeanDecreaseAccuracy))
+
+# Show top 20 most important features
+cat("Top 20 Most Important ASVs:\n")
+print(importance_df[1:20, c("ASV", "MeanDecreaseAccuracy", "MeanDecreaseGini")])
+```
+
+## Visualize Feature Importance
+
+```{r plot-importance, fig.height=8}
+# Get top 30 features
+top_features <- importance_df %>%
+  head(30)
+
+# Get taxonomy for these ASVs
+tax_table_df <- as.data.frame(tax_table(ps_d0))
+top_features <- top_features %>%
+  left_join(tax_table_df %>% rownames_to_column("ASV"), by = "ASV") %>%
+  mutate(
+    # Create informative labels
+    label = paste0(Family, " (", Genus, ")")
+  )
+
+# Plot
+p_importance <- ggplot(top_features,
+                       aes(x = reorder(label, MeanDecreaseAccuracy),
+                           y = MeanDecreaseAccuracy)) +
+  geom_col(fill = "steelblue", alpha = 0.7) +
+  coord_flip() +
+  labs(
+    title = "Top 30 Most Important Taxa for Survival Prediction",
+    subtitle = "Based on Random Forest Feature Importance",
+    x = "Bacterial Taxon (Family, Genus)",
+    y = "Mean Decrease in Accuracy"
+  ) +
+  theme_bw() +
+  theme(axis.text.y = element_text(size = 8))
+
+print(p_importance)
+```
+
+**Interpretation:**
+
+- Taxa at the top have the strongest predictive power
+- These bacteria differentiate survivors from non-survivors at baseline
+- **Important:** Predictive power ≠ causation!
+
+---
+
+## Abundance of Top Predictive Taxa
+
+Let's see HOW these important taxa differ between survivors and non-survivors:
+
+```{r top-taxa-abundance}
+# Get top 6 most important ASVs
+top_6_asvs <- importance_df$ASV[1:6]
+
+# Extract their abundances
+top_abundances <- otu_mat[, top_6_asvs]
+
+# Combine with outcome
+plot_data <- as.data.frame(top_abundances) %>%
+  mutate(survival_status = outcome) %>%
+  pivot_longer(cols = -survival_status,
+               names_to = "ASV",
+               values_to = "Abundance")
+
+# Add taxonomy labels
+tax_labels <- tax_table_df %>%
+  rownames_to_column("ASV") %>%
+  filter(ASV %in% top_6_asvs) %>%
+  mutate(label = paste0(Family, "\n", Genus))
+
+plot_data <- plot_data %>%
+  left_join(tax_labels %>% select(ASV, label), by = "ASV")
+
+# Plot
+p_top_abundance <- ggplot(plot_data,
+                          aes(x = survival_status, y = Abundance,
+                              fill = survival_status)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.4, size = 1) +
+  facet_wrap(~label, scales = "free_y", ncol = 3) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Abundance of Top 6 Predictive Taxa",
+    subtitle = "At baseline (Day 0) by survival outcome",
+    x = "Survival Status",
+    y = "Relative Abundance (%)"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none",
+        strip.text = element_text(size = 8))
+
+print(p_top_abundance)
+```
+
+**Biological Questions to Ask:**
+
+1. Are these taxa more abundant in survivors or non-survivors?
+2. Could these bacteria provide protection? Or indicate vulnerability?
+3. Are these known pathogens or beneficial bacteria?
+4. Do they make biological sense given what we know?
+
+---
+
+# Part 4: Cross-Validation
+
+## The Problem with Our Current Results
+
+We trained and tested on the **same data**! This is called "overfitting" and gives overly optimistic performance estimates.
+
+**Solution:** Cross-validation - split data into training and testing sets.
+
+---
+
+## 10-Fold Cross-Validation
+
+```{r cross-validation}
+cat("Running 10-fold cross-validation...\n")
+cat("This may take a few minutes...\n\n")
+
+# Set up cross-validation
+train_control <- trainControl(
+  method = "cv",           # Cross-validation
+  number = 10,             # 10 folds
+  classProbs = TRUE,       # Calculate class probabilities
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+# Create formula (outcome ~ all features)
+# But caret needs a data frame with specific column names
+# Prepare data
+cv_data <- as.data.frame(otu_mat)
+cv_data$outcome <- outcome
+
+# Train with cross-validation
+set.seed(12345)
+cv_model <- train(
+  outcome ~ .,             # Predict outcome from all other columns
+  data = cv_data,
+  method = "rf",           # Random forest
+  trControl = train_control,
+  metric = "ROC",          # Optimize for ROC
+  ntree = 500,
+  importance = TRUE
+)
+
+print(cv_model)
+```
+
+### Cross-Validation Results
+
+```{r cv-results}
+# Get CV predictions
+cv_predictions <- cv_model$pred
+cv_predictions <- cv_predictions %>%
+  filter(mtry == cv_model$bestTune$mtry)  # Use best tuning parameter
+
+# Calculate confusion matrix on CV predictions
+cv_conf_mat <- confusionMatrix(cv_predictions$pred,
+                               cv_predictions$obs,
+                               positive = "Dead")
+
+cat("\n=== Cross-Validated Performance ===\n")
+cat("ROC:", round(cv_model$results$ROC[cv_model$results$mtry == cv_model$bestTune$mtry], 3), "\n")
+cat("Sensitivity:", round(cv_model$results$Sens[cv_model$results$mtry == cv_model$bestTune$mtry], 3), "\n")
+cat("Specificity:", round(cv_model$results$Spec[cv_model$results$mtry == cv_model$bestTune$mtry], 3), "\n")
+
+print(cv_conf_mat)
+```
+
+**Compare:**
+
+- Single model (trained on all data): Likely overfit
+- Cross-validated model: More realistic estimate
+
+**Question:** Is the cross-validated performance still good enough to be useful?
+
+---
+
+# Part 5: Interpretation and Discussion
+
+## Prediction vs. Causation
+
+**Critical distinction:**
+
+✅ **What we CAN say:**
+- "Baseline microbiome composition is associated with survival outcomes"
+- "Certain bacteria are predictive markers of survival"
+- "We can identify at-risk individuals with X% accuracy"
+
+❌ **What we CANNOT say:**
+- "These bacteria CAUSE death or survival"
+- "Changing these bacteria will change outcomes"
+- "This explains WHY antibiotics affect survival"
+
+**Why?** Machine learning finds correlations, not causation. To establish causation, we would need:
+- Controlled experiments (e.g., fecal transplants)
+- Mechanism studies (how do these bacteria influence immunity?)
+- Temporal dynamics (do changes precede outcomes?)
+
+---
+
+## Biological Interpretation
+
+**Possible explanations for predictive power:**
+
+### Scenario 1: Protective Bacteria
+- Some bacteria at baseline provide immune support
+- Mice with these bacteria are more resilient to infection
+- **Testable:** Transfer these bacteria to germ-free mice
+
+### Scenario 2: Vulnerability Markers
+- Some bacteria indicate compromised gut barrier
+- These mice are already stressed/inflamed
+- Microbiome is a symptom, not a cause
+
+### Scenario 3: Treatment Response
+- Baseline microbiome determines antibiotic response
+- Some communities are more disrupted by treatment
+- **Testable:** Compare vehicle-treated mice
+
+### Scenario 4: Confounding Factors
+- Cage effects, genetics, or other unmeasured variables
+- Microbiome correlates with these true causes
+- **Testable:** Control for cage/litter in models
+
+---
+
+## When is Machine Learning Appropriate?
+
+**Good uses for microbiome ML:**
+
+✅ Exploratory analysis - finding patterns
+✅ Biomarker discovery - identifying diagnostic features
+✅ Clinical prediction - risk stratification
+✅ Generating hypotheses for experimental follow-up
+
+**Poor uses:**
+
+❌ Small sample sizes (n < 50)
+❌ Claiming causation without experiments
+❌ Black-box predictions without interpretation
+❌ Replacing statistical testing entirely
+
+---
+
+## Limitations of This Analysis
+
+1. **Sample size:** Only `r nsamples(ps_d0)` baseline samples - more would be better
+
+2. **Feature space:** We used ASVs, but could also try:
+   - Phylum-level aggregation
+   - Alpha diversity metrics
+   - Beta diversity PCs
+   - Functional predictions
+
+3. **Model choice:** Random Forest is good, but we could compare:
+   - Logistic regression (simpler, more interpretable)
+   - Gradient boosting (potentially more accurate)
+   - Elastic net (handles correlation between features)
+
+4. **External validation:** We should test on independent dataset
+
+5. **Biological validation:** Predictions need experimental confirmation
+
+---
+
+# Part 6: Extensions and Future Directions
+
+## Try It Yourself: Modify the Model
+
+```{r exercise-code, eval=FALSE}
+# Exercise 1: Use only highly abundant bacteria (>1% mean abundance)
+abundant_asvs <- colnames(otu_mat)[colMeans(otu_mat) > 0.01]
+cat("Using", length(abundant_asvs), "abundant ASVs\n")
+
+# Rebuild model with only these features
+otu_abundant <- otu_mat[, abundant_asvs]
+rf_abundant <- randomForest(
+  x = otu_abundant,
+  y = outcome,
+  ntree = 500,
+  importance = TRUE
+)
+print(rf_abundant)
+
+# Exercise 2: Add alpha diversity as a feature
+library(vegan)
+richness <- rowSums(otu_mat > 0)  # Observed richness
+shannon <- diversity(otu_mat, index = "shannon")
+
+otu_plus_alpha <- cbind(otu_mat, Richness = richness, Shannon = shannon)
+rf_plus_alpha <- randomForest(
+  x = otu_plus_alpha,
+  y = outcome,
+  ntree = 500,
+  importance = TRUE
+)
+print(rf_plus_alpha)
+
+# Exercise 3: Subset to specific treatment
+ps_vehicle_d0 <- subset_samples(ps_d0, treatment == "Vehicle")
+# ... repeat analysis for just vehicle controls
+
+# Does baseline microbiome predict survival even without antibiotics?
+```
+
+---
+
+## Advanced Topics
+
+If you want to go deeper, explore:
+
+1. **Dimensionality reduction first:**
+   - Use PCA or PCoA on ASV table
+   - Build classifier on PCs instead of raw ASVs
+   - Reduces overfitting, speeds up training
+
+2. **Other algorithms:**
+   - Gradient boosting (XGBoost)
+   - Support vector machines
+   - Neural networks (for very large datasets)
+
+3. **Feature engineering:**
+   - Phylum-level ratios
+   - Diversity metrics
+   - Functional predictions (PICRUSt2)
+
+4. **Incorporate other data types:**
+   - Host genetics
+   - Clinical measurements
+   - Multi-omics integration
+
+5. **Time series modeling:**
+   - Predict outcomes from microbiome trajectories
+   - Use recurrent neural networks
+
+---
+
+# Summary
+
+## Key Takeaways
+
+1. **Machine learning CAN predict survival from baseline microbiome**
+   - But predictive power varies (check your AUC!)
+   - Cross-validation gives realistic performance estimates
+
+2. **Feature importance identifies key bacteria**
+   - These are biomarker candidates
+   - Not necessarily causal agents
+
+3. **Prediction ≠ Causation**
+   - ML finds associations
+   - Experiments establish causation
+
+4. **Microbiome ML has specific challenges:**
+   - High dimensionality (many features)
+   - Compositionality (counts sum to total)
+   - Sample size often limiting
+   - Interpretation requires biological knowledge
+
+5. **ML is a hypothesis-generating tool**
+   - Use it to find patterns and candidates
+   - Follow up with controlled experiments
+   - Integrate with mechanistic studies
+
+---
+
+## Connections to Core Tutorial
+
+This advanced module builds on concepts from the main tutorial:
+
+| Core Tutorial | ML Extension |
+|--------------|--------------|
+| Alpha diversity → comparing groups | Alpha diversity → predictive feature |
+| Beta diversity → visualizing structure | Beta diversity PCs → dimensionality reduction |
+| DESeq2 → hypothesis testing | Random Forest → prediction |
+| Taxonomy → understanding communities | Feature importance → biomarker discovery |
+
+**The full workflow:**
+
+1. **Explore** (core tutorial) → understand your data
+2. **Test** (core tutorial) → find significant differences
+3. **Predict** (this module) → build classifiers
+4. **Validate** (future work) → experimental confirmation
+
+---
+
+## Additional Resources
+
+**Machine Learning for Microbiome:**
+
+- [Microbiome ML Review](https://doi.org/10.1186/s40168-018-0543-y)
+- [Best Practices](https://doi.org/10.1038/s41587-020-0548-6)
+- [caret package documentation](https://topepo.github.io/caret/)
+
+**Random Forests:**
+
+- [Breiman (2001) Original Paper](https://doi.org/10.1023/A:1010933404324)
+- [randomForest R package](https://cran.r-project.org/web/packages/randomForest/)
+
+**ROC Curves:**
+
+- [pROC package](https://web.expasy.org/pROC/)
+- [Understanding ROC Curves](https://doi.org/10.1371/journal.pone.0118432)
+
+---
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```
+
+---
+
+**Congratulations!** You've completed the Machine Learning advanced module. You now know how to:
+
+✅ Build predictive models from microbiome data
+✅ Evaluate classifier performance rigorously
+✅ Identify important bacterial features
+✅ Interpret results in biological context
+✅ Distinguish prediction from causation
+
+**Next steps:**
+
+- Try the exercises with different parameters
+- Apply these methods to your own microbiome data
+- Explore other advanced modules (coming soon!)
+- Read the original paper (Thackray et al. 2018) to see how they addressed causation
+
+---
+
+*Generated for the 16S rRNA Microbiome Analysis Tutorial Series*
