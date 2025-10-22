@@ -290,10 +290,8 @@ Rather than blindly removing samples, let's **learn to identify** problematic on
 
 ```{r quality-assessment}
 # Create a dataframe with read counts and metadata
-# First get metadata with sample_id column
-metadata_ps1 <- sample_data(ps1) %>%
-  as.data.frame() %>%
-  rownames_to_column("sample_id")
+# sample_data already has sample_id column, so just convert to data frame
+metadata_ps1 <- as.data.frame(sample_data(ps1))
 
 sample_summary <- data.frame(
   sample_id = sample_names(ps1),
@@ -507,10 +505,8 @@ legend("bottomright",
 alpha_div <- estimate_richness(ps2, measures = c("Observed", "Shannon"))
 
 # Combine with sample metadata
-# Convert sample_data to data frame and preserve rownames as sample_id
-metadata_df <- sample_data(ps2) %>%
-  as.data.frame() %>%
-  rownames_to_column("sample_id")
+# sample_data already has sample_id column, so just convert to data frame
+metadata_df <- as.data.frame(sample_data(ps2))
 
 alpha_df <- alpha_div %>%
   rownames_to_column("sample_id") %>%
