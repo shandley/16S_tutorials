@@ -505,11 +505,12 @@ legend("bottomright",
 alpha_div <- estimate_richness(ps2, measures = c("Observed", "Shannon"))
 
 # Combine with sample metadata
-# sample_data already has sample_id column, so just convert to data frame
+# Note: estimate_richness() rownames get "X" prefix for numeric sample names
+# So we use sample_names(ps2) directly to ensure IDs match
 metadata_df <- as.data.frame(sample_data(ps2))
 
 alpha_df <- alpha_div %>%
-  rownames_to_column("sample_id") %>%
+  mutate(sample_id = sample_names(ps2)) %>%  # Use phyloseq sample names, not rownames
   left_join(metadata_df, by = "sample_id")
 
 # Preview
