@@ -419,6 +419,10 @@ dist_matrix <- as.matrix(unifrac_dist)
 baseline_samples <- sample_names(ps_d0)
 later_samples <- sample_names(ps_later)
 
+# Pre-compute baseline samples for each treatment (to avoid scoping issues)
+metadata_d0 <- data.frame(sample_data(ps_d0))
+baseline_by_treatment <- split(sample_names(ps_d0), metadata_d0$treatment)
+
 # Calculate mean distance to baseline for each sample
 baseline_dist <- data.frame(
   sample_id = later_samples,
@@ -426,7 +430,7 @@ baseline_dist <- data.frame(
     # Get treatment for this sample
     trt <- metadata_all$treatment[metadata_all$sample_id == s]
     # Find baseline samples with same treatment
-    baseline_same_trt <- sample_names(subset_samples(ps_d0, treatment == trt))
+    baseline_same_trt <- baseline_by_treatment[[as.character(trt)]]
     # Calculate mean distance
     if (length(baseline_same_trt) > 0) {
       mean(dist_matrix[s, baseline_same_trt], na.rm = TRUE)
