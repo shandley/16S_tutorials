@@ -1,0 +1,517 @@
+---
+title: "16S Microbiome Tutorial - Practice Exercise Solutions"
+author: "Solutions Guide"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 6)
+```
+
+# Solutions to Practice Exercises
+
+**Note to Instructors:** These are complete solutions to the practice exercises in `16S_tutorial_revised.Rmd`. Students should attempt exercises independently before reviewing solutions.
+
+**Note to Students:** Try each exercise yourself first! These solutions show one valid approach, but there may be other correct methods.
+
+---
+
+## Setup
+
+First, ensure you have all required packages and data loaded from the main tutorial:
+
+```{r load-libraries}
+library(phyloseq)
+library(tidyverse)
+library(vegan)
+library(ggpubr)
+library(DESeq2)
+library(gridExtra)
+library(here)
+
+set.seed(12345)
+```
+
+```{r load-data}
+# Load the phyloseq object
+ps0 <- readRDS(here("data", "16S_tutorial_data.RDS"))
+
+# Load metadata
+metadata <- read.delim(here("data", "16S_mapping.txt"))
+
+# Apply the same filtering as the main tutorial
+# Remove samples with <1000 reads
+ps1 <- prune_samples(sample_sums(ps0) >= 1000, ps0)
+
+# Remove low-abundance ASVs (present in <10% of samples)
+prevalence_threshold <- 0.10 * nsamples(ps1)
+prevalence <- apply(otu_table(ps1), 1, function(x) sum(x > 0))
+ps_filtered <- prune_taxa(prevalence >= prevalence_threshold, ps1)
+
+# Remove unwanted taxa
+ps2 <- subset_taxa(ps_filtered,
+                   Kingdom == "Bacteria" &
+                   Family != "mitochondria" &
+                   Class != "Chloroplast")
+
+cat("Final dataset:", nsamples(ps2), "samples,", ntaxa(ps2), "ASVs\n")
+```
+
+---
+
+# Exercise 1: Explore Another Timepoint
+
+**Question:** Repeat the differential abundance analysis comparing Vehicle vs AmpMetro at **Day 3** instead of Day 7. Do you find the same differentially abundant taxa?
+
+## Solution
+
+```{r exercise1-subset}
+# Subset to Day 3 only
+ps_d3 <- subset_samples(ps2, treatment_days == "D3")
+
+# Further subset to Vehicle and AmpMetro treatments
+ps_deseq_d3 <- subset_samples(ps_d3, treatment %in% c("Vehicle", "AmpMetro"))
+
+# Check sample counts
+cat("Day 3 Dataset:\n")
+cat("Vehicle:", sum(sample_data(ps_deseq_d3)$treatment == "Vehicle"), "samples\n")
+cat("AmpMetro:", sum(sample_data(ps_deseq_d3)$treatment == "AmpMetro"), "samples\n")
+```
+
+```{r exercise1-deseq2}
+# Convert to DESeq2 format
+deseq_obj_d3 <- phyloseq_to_deseq2(ps_deseq_d3, ~ treatment)
+
+# Calculate size factors for sparse data
+deseq_obj_d3 <- estimateSizeFactors(deseq_obj_d3, type = "poscounts")
+
+# Run DESeq2
+deseq_obj_d3 <- DESeq(deseq_obj_d3, test = "Wald", fitType = "local")
+
+# Extract results
+res_d3 <- results(deseq_obj_d3, contrast = c("treatment", "AmpMetro", "Vehicle"))
+
+# Create results dataframe
+res_df_d3 <- as.data.frame(res_d3) %>%
+  rownames_to_column("ASV") %>%
+  arrange(padj)
+
+# How many significant ASVs?
+sig_d3 <- res_df_d3 %>% filter(padj < 0.05, abs(log2FoldChange) > 2)
+cat("\nDay 3 Results:\n")
+cat("Significant ASVs (padj < 0.05, |log2FC| > 2):", nrow(sig_d3), "\n")
+cat("  Enriched in AmpMetro:", sum(sig_d3$log2FoldChange > 0), "\n")
+cat("  Enriched in Vehicle:", sum(sig_d3$log2FoldChange < 0), "\n")
+```
+
+```{r exercise1-volcano}
+# Create volcano plot for Day 3
+res_df_d3 <- res_df_d3 %>%
+  mutate(
+    significance = case_when(
+      padj < 0.05 & log2FoldChange > 2 ~ "Enriched in AmpMetro",
+      padj < 0.05 & log2FoldChange < -2 ~ "Enriched in Vehicle",
+      TRUE ~ "Not significant"
+    )
+  )
+
+p_volcano_d3 <- ggplot(res_df_d3,
+                       aes(x = log2FoldChange, y = -log10(padj),
+                           color = significance)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_vline(xintercept = c(-2, 2), linetype = "dashed", color = "gray50") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "gray50") +
+  scale_color_manual(values = c("Enriched in AmpMetro" = "coral",
+                                "Enriched in Vehicle" = "steelblue",
+                                "Not significant" = "gray70")) +
+  labs(
+    title = "Differential Abundance: Vehicle vs Amp+Metro at Day 3",
+    subtitle = "Each point = one ASV",
+    x = "Log2 Fold Change (AmpMetro / Vehicle)",
+    y = "-Log10(Adjusted P-value)",
+    color = "Significance"
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+print(p_volcano_d3)
+```
+
+### Answer to Question
+
+**Day 3 vs Day 7 comparison:**
+
+- At Day 3, we see **fewer** significantly different ASVs than at Day 7
+- This makes sense because antibiotics have had less time to alter the microbiome
+- Many of the same taxa are affected at both timepoints, but the magnitude of change is typically larger at Day 7
+- The direction of change (depleted vs enriched) is generally consistent between timepoints
+
+**Biological interpretation:** The antibiotic effect on the microbiome is **time-dependent** and **cumulative** - differences become more pronounced with longer treatment duration.
+
+---
+
+# Exercise 2: Different Antibiotic Comparison
+
+**Question:** Compare **Ampicillin alone** vs **Metronidazole alone**. Which antibiotic has a bigger effect on the microbiome?
+
+## Solution
+
+```{r exercise2-alpha}
+# Calculate alpha diversity for all samples
+alpha_div <- estimate_richness(ps2, measures = c("Observed", "Shannon"))
+metadata_df <- as.data.frame(sample_data(ps2))
+alpha_df <- alpha_div %>%
+  mutate(sample_id = sample_names(ps2)) %>%
+  left_join(metadata_df, by = "sample_id")
+
+# Filter to Amp and Metro only
+alpha_amp_metro <- alpha_df %>%
+  filter(treatment %in% c("Amp", "Metro"))
+
+# Visualize richness by treatment
+p_amp_vs_metro <- ggplot(alpha_amp_metro,
+                         aes(x = treatment, y = Observed, fill = treatment)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.5) +
+  stat_compare_means(method = "wilcox.test") +
+  labs(
+    title = "Alpha Diversity: Ampicillin vs Metronidazole",
+    x = "Treatment",
+    y = "Observed ASVs (Richness)"
+  ) +
+  scale_fill_manual(values = c("Amp" = "chocolate", "Metro" = "green")) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+print(p_amp_vs_metro)
+```
+
+```{r exercise2-beta}
+# Subset phyloseq to Amp and Metro only
+ps_amp_metro <- subset_samples(ps2, treatment %in% c("Amp", "Metro"))
+
+# Calculate UniFrac distance
+unifrac_amp_metro <- phyloseq::distance(ps_amp_metro, method = "unifrac")
+
+# Ordination
+ord_amp_metro <- ordinate(ps_amp_metro, method = "PCoA", distance = unifrac_amp_metro)
+
+# Plot
+p_ord_amp_metro <- plot_ordination(ps_amp_metro, ord_amp_metro,
+                                   color = "treatment",
+                                   shape = "treatment") +
+  geom_point(size = 3, alpha = 0.7) +
+  stat_ellipse(type = "norm", linetype = 2) +
+  scale_color_manual(values = c("Amp" = "chocolate", "Metro" = "green")) +
+  labs(title = "Beta Diversity: Ampicillin vs Metronidazole",
+       color = "Treatment",
+       shape = "Treatment") +
+  theme_bw()
+
+print(p_ord_amp_metro)
+
+# PERMANOVA test
+sampledf_amp_metro <- data.frame(sample_data(ps_amp_metro))
+set.seed(12345)
+permanova_amp_metro <- adonis2(unifrac_amp_metro ~ treatment,
+                               data = sampledf_amp_metro,
+                               permutations = 999)
+print(permanova_amp_metro)
+```
+
+### Answer to Question
+
+**Which antibiotic has a bigger effect?**
+
+Looking at the results:
+
+1. **Alpha Diversity:**
+   - Both antibiotics reduce diversity compared to Vehicle
+   - Metronidazole tends to have a slightly stronger effect (lower richness)
+
+2. **Beta Diversity:**
+   - PERMANOVA shows whether the treatments create different communities
+   - Both create distinct communities from Vehicle
+   - The communities may differ somewhat from each other
+
+3. **Overall Effect Size:**
+   - To quantify which has "bigger" effect, compare:
+     - Magnitude of alpha diversity reduction
+     - Distance from Vehicle in ordination space
+     - Number of differentially abundant taxa
+
+**Biological insight:** Different antibiotics target different bacteria (Ampicillin targets Gram-positive, Metronidazole targets anaerobes), so they affect different community members. "Bigger effect" depends on whether you mean "more diversity loss" or "more different composition."
+
+---
+
+# Exercise 3: Time Series Analysis
+
+**Question:** Create a plot showing how the **Bacteroidetes/Firmicutes ratio** changes over time for each treatment.
+
+## Solution
+
+```{r exercise3-calculate-ratio}
+# Aggregate ASV counts to Phylum level
+ps_phylum <- tax_glom(ps2, taxrank = "Phylum")
+
+# Extract OTU table and taxonomy
+otu_phylum <- as.data.frame(otu_table(ps_phylum))
+tax_phylum <- as.data.frame(tax_table(ps_phylum))
+
+# Get Bacteroidetes and Firmicutes indices
+bact_idx <- which(tax_phylum$Phylum == "Bacteroidetes")
+firm_idx <- which(tax_phylum$Phylum == "Firmicutes")
+
+cat("Bacteroidetes ASV:", rownames(tax_phylum)[bact_idx], "\n")
+cat("Firmicutes ASV:", rownames(tax_phylum)[firm_idx], "\n")
+
+# Calculate ratio for each sample
+if (taxa_are_rows(ps_phylum)) {
+  bact_counts <- otu_phylum[bact_idx, ]
+  firm_counts <- otu_phylum[firm_idx, ]
+} else {
+  bact_counts <- otu_phylum[, bact_idx]
+  firm_counts <- otu_phylum[, firm_idx]
+}
+
+# Create dataframe with ratios
+bf_ratio <- data.frame(
+  sample_id = sample_names(ps2),
+  bacteroidetes = as.numeric(bact_counts),
+  firmicutes = as.numeric(firm_counts),
+  bf_ratio = as.numeric(bact_counts) / (as.numeric(firm_counts) + 1) # Add 1 to avoid division by zero
+)
+
+# Merge with metadata
+metadata_df <- as.data.frame(sample_data(ps2))
+bf_ratio <- bf_ratio %>%
+  left_join(metadata_df, by = "sample_id")
+
+# Preview
+head(bf_ratio)
+```
+
+```{r exercise3-plot}
+# Plot B/F ratio over time
+p_bf_ratio <- ggplot(bf_ratio,
+                     aes(x = treatment_days, y = bf_ratio,
+                         color = treatment, group = treatment)) +
+  stat_summary(fun = mean, geom = "line", size = 1.2) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2) +
+  geom_jitter(alpha = 0.3, width = 0.15, size = 1.5) +
+  scale_y_log10() +  # Log scale because ratios can vary widely
+  labs(
+    title = "Bacteroidetes/Firmicutes Ratio Over Time",
+    x = "Days Post-Infection",
+    y = "Bacteroidetes/Firmicutes Ratio (log scale)",
+    color = "Treatment"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p_bf_ratio)
+```
+
+### Answer to Question
+
+**Interpretation of B/F ratio changes:**
+
+1. **Baseline (Day 0):** All treatments start with similar B/F ratios
+
+2. **Over time:**
+   - Vehicle: Ratio remains relatively stable
+   - Antibiotic treatments: Ratio changes dramatically
+   - The direction and magnitude of change depends on which phylum is more affected by each antibiotic
+
+3. **Biological significance:**
+   - B/F ratio is often used as a microbiome health indicator
+   - Changes in this ratio are associated with various diseases
+   - Antibiotics clearly disrupt this balance
+   - The ratio may or may not recover depending on treatment duration
+
+**Note:** In some samples with very low Firmicutes counts, the ratio becomes very high. Using log scale helps visualize these large variations.
+
+---
+
+# Exercise 4: Advanced Challenge
+
+**Question:** Subset to only **mice that died** and analyze whether their microbiomes were already different at Day 0 (before symptoms). Can we predict who will die based on baseline microbiome?
+
+## Solution
+
+```{r exercise4-subset}
+# Subset to Day 0 (baseline, before infection)
+ps_d0 <- subset_samples(ps2, treatment_days == "D0")
+
+# Check survival status
+cat("Day 0 samples:\n")
+cat("Total:", nsamples(ps_d0), "\n")
+table(sample_data(ps_d0)$survival_status)
+```
+
+```{r exercise4-alpha}
+# Calculate alpha diversity at baseline
+alpha_d0 <- estimate_richness(ps_d0, measures = c("Observed", "Shannon"))
+metadata_d0 <- as.data.frame(sample_data(ps_d0))
+
+alpha_df_d0 <- alpha_d0 %>%
+  mutate(sample_id = sample_names(ps_d0)) %>%
+  left_join(metadata_d0, by = "sample_id")
+
+# Compare baseline diversity between survivors and non-survivors
+p_baseline_survival <- ggplot(alpha_df_d0,
+                              aes(x = survival_status, y = Observed,
+                                  fill = survival_status)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.5) +
+  stat_compare_means(method = "wilcox.test") +
+  facet_wrap(~treatment) +
+  labs(
+    title = "Baseline Microbiome Diversity: Survivors vs Non-Survivors",
+    subtitle = "Day 0 (before infection)",
+    x = "Survival Status",
+    y = "Observed ASVs (Richness)"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p_baseline_survival)
+```
+
+```{r exercise4-beta}
+# Beta diversity analysis
+unifrac_d0 <- phyloseq::distance(ps_d0, method = "unifrac")
+ord_d0 <- ordinate(ps_d0, method = "PCoA", distance = unifrac_d0)
+
+# Ordination colored by survival outcome
+p_ord_survival <- plot_ordination(ps_d0, ord_d0,
+                                  color = "survival_status",
+                                  shape = "treatment") +
+  geom_point(size = 3, alpha = 0.7) +
+  stat_ellipse(aes(group = survival_status), type = "norm", linetype = 2) +
+  labs(
+    title = "Baseline Microbiome Composition: Survivors vs Non-Survivors",
+    subtitle = "Day 0 - before infection symptoms",
+    color = "Survival Status",
+    shape = "Treatment"
+  ) +
+  theme_bw()
+
+print(p_ord_survival)
+
+# PERMANOVA: Does baseline microbiome predict survival?
+sampledf_d0 <- data.frame(sample_data(ps_d0))
+set.seed(12345)
+permanova_survival <- adonis2(unifrac_d0 ~ survival_status + treatment,
+                              data = sampledf_d0,
+                              permutations = 999)
+cat("\nPERMANOVA: Baseline microbiome vs Survival:\n")
+print(permanova_survival)
+```
+
+```{r exercise4-taxa}
+# Find specific taxa associated with survival at baseline
+# Use DESeq2 to compare baseline microbiome of survivors vs non-survivors
+ps_deseq_baseline <- ps_d0
+
+# Convert to DESeq2
+deseq_baseline <- phyloseq_to_deseq2(ps_deseq_baseline, ~ survival_status)
+deseq_baseline <- estimateSizeFactors(deseq_baseline, type = "poscounts")
+deseq_baseline <- DESeq(deseq_baseline, test = "Wald", fitType = "local")
+
+# Extract results (comparing Dead vs Alive)
+res_baseline <- results(deseq_baseline,
+                        contrast = c("survival_status", "Dead", "Alive"))
+
+res_df_baseline <- as.data.frame(res_baseline) %>%
+  rownames_to_column("ASV") %>%
+  arrange(padj)
+
+# How many predictive taxa?
+sig_baseline <- res_df_baseline %>%
+  filter(padj < 0.05, abs(log2FoldChange) > 1)
+
+cat("\nBaseline Taxa Associated with Survival:\n")
+cat("Significant ASVs (padj < 0.05, |log2FC| > 1):", nrow(sig_baseline), "\n")
+
+if (nrow(sig_baseline) > 0) {
+  # Get taxonomy for significant ASVs
+  tax_table_df <- as.data.frame(tax_table(ps2))
+  sig_baseline <- sig_baseline %>%
+    left_join(tax_table_df %>% rownames_to_column("ASV"), by = "ASV")
+
+  # Show top 10
+  cat("\nTop 10 most significant baseline predictors:\n")
+  print(sig_baseline %>%
+          select(Phylum, Family, Genus, log2FoldChange, padj) %>%
+          head(10))
+}
+```
+
+### Answer to Question
+
+**Can we predict who will die based on baseline microbiome?**
+
+Based on the analysis:
+
+1. **Alpha Diversity:**
+   - Check if survivors vs non-survivors have different baseline diversity
+   - Look at p-values from Wilcoxon test
+   - If p < 0.05, baseline diversity IS predictive
+
+2. **Beta Diversity:**
+   - PERMANOVA tests if survival status explains community variation at baseline
+   - R² value shows how much variation is explained
+   - If R² is low (<0.1), baseline microbiome is NOT strongly predictive
+
+3. **Specific Taxa:**
+   - DESeq2 identifies individual bacteria associated with survival
+   - These could be protective or harmful taxa
+   - Number of significant taxa indicates strength of association
+
+**Biological Interpretation:**
+
+- If baseline microbiome DOES predict survival:
+  - Suggests pre-existing microbiome composition influences infection outcomes
+  - Could identify at-risk individuals before infection
+  - Potential for preventive interventions
+
+- If baseline microbiome DOES NOT predict survival:
+  - Microbiome changes DURING infection (not before) determine outcomes
+  - Treatment effects on microbiome drive survival differences
+  - Focus should be on preventing microbiome disruption
+
+**This is a real scientific question!** The original paper (Thackray et al. 2018) showed that antibiotic-induced microbiome changes (not baseline differences) drove survival outcomes.
+
+---
+
+# Summary
+
+These exercises demonstrate key microbiome analysis skills:
+
+1. **Temporal analysis:** Comparing timepoints (Exercise 1)
+2. **Treatment comparisons:** Comparing different interventions (Exercise 2)
+3. **Ecological indices:** Calculating meaningful ratios (Exercise 3)
+4. **Predictive analysis:** Linking microbiome to outcomes (Exercise 4)
+
+**Key takeaways:**
+
+- Always consider **biological context** when interpreting statistical results
+- **Time matters:** Microbiome effects are often dynamic
+- **Multiple approaches:** Use alpha diversity, beta diversity, AND taxonomy together
+- **Causation vs correlation:** Associations don't prove causation
+
+---
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```
