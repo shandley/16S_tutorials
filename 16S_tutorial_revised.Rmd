@@ -375,8 +375,16 @@ Think of it like bird watching: if you keep seeing new species with each hour of
 ```{r rarefaction-curves}
 # Calculate rarefaction curves
 # This randomly subsamples reads and counts unique ASVs at each depth
+
+# Extract OTU table and ensure correct orientation
+# rarecurve() needs samples as ROWS, taxa as COLUMNS
+otu_matrix <- as(otu_table(ps2), "matrix")
+if (taxa_are_rows(ps2)) {
+  otu_matrix <- t(otu_matrix)  # Transpose if taxa are rows
+}
+
 rare_curve_data <- rarecurve(
-  t(otu_table(ps2)),  # Transpose to correct format
+  otu_matrix,
   step = 100,         # Calculate every 100 reads
   label = FALSE       # Don't label each curve
 )
@@ -401,9 +409,9 @@ sample_colors <- sample_data(ps2)$treatment
 color_palette <- c("Vehicle" = "black", "Amp" = "chocolate",
                    "Metro" = "green", "AmpMetro" = "purple")
 
-# Plot rarefaction curves
+# Plot rarefaction curves (reuse the correctly oriented matrix)
 rarecurve(
-  t(otu_table(ps2)),
+  otu_matrix,
   step = 100,
   col = color_palette[sample_colors],
   lwd = 1,
