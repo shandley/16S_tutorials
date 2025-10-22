@@ -36,11 +36,20 @@ This tutorial is designed for biology students with 2-3 days of training in:
 
 ## Tutorial Files
 
-- `16S_tutorial_revised.Rmd` - Main tutorial R Markdown document
+### Core Tutorial
+- `16S_tutorial_revised.Rmd` - Main tutorial R Markdown document (90-100 minutes)
+- `16S_tutorial_solutions.Rmd` - Complete solutions to practice exercises
+
+### Advanced Modules
+- `16S_advanced_machine_learning.Rmd` - Machine learning for survival prediction (45-60 minutes)
+
+### Documentation
 - `REVISION_SUMMARY.md` - Detailed documentation of tutorial design
+- `TUTORIAL_REDESIGN_RECOMMENDATIONS.md` - Enhancement documentation and future module ideas
 
 ## Required R Packages
 
+### Core Tutorial
 ```r
 # Core analysis
 library(phyloseq)
@@ -52,6 +61,13 @@ library(tidyverse)
 library(ggpubr)
 library(gridExtra)
 library(here)  # Smart file paths
+```
+
+### Advanced ML Module (Additional)
+```r
+library(randomForest)  # Random forest algorithm
+library(caret)         # Cross-validation
+library(pROC)          # ROC curves
 ```
 
 See `PACKAGE_MANAGEMENT.md` for detailed installation instructions and options.
@@ -98,13 +114,18 @@ source("setup_packages.R")
 
 ```
 16S_tutorial/
-├── 16S_tutorial_revised.Rmd        # Main tutorial
+├── 16S_tutorial_revised.Rmd        # Main tutorial (core, 90-100 min)
+├── 16S_tutorial_solutions.Rmd      # Solutions to practice exercises
+├── 16S_advanced_machine_learning.Rmd  # ML module (45-60 min)
 ├── 16S_tutorials.Rproj             # RStudio project file
 ├── setup_packages.R                # One-time package installation
+├── README.md                       # This file
 ├── STUDENT_INSTRUCTIONS.md         # Step-by-step student guide
 ├── INSTRUCTOR_SETUP.md             # Instructor setup guide
-├── README.md                       # This file
-├── TUTORIAL_REDESIGN_RECOMMENDATIONS.md  # Enhancement documentation
+├── REVISION_SUMMARY.md             # Tutorial design documentation
+├── TUTORIAL_REDESIGN_RECOMMENDATIONS.md  # Enhancement ideas
+├── PACKAGE_MANAGEMENT.md           # Package installation guide
+├── POSIT_CLOUD_SETUP.md           # Cloud setup (not recommended)
 └── data/
     ├── 16S_mapping.txt             # Sample metadata (520 samples)
     └── 16S_tutorial_data.RDS       # Phyloseq object (503KB)
