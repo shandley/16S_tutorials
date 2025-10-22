@@ -806,7 +806,9 @@ summary(model)
 library(mgcv)
 
 # Smooth trajectories for each treatment
-gam_model <- gam(Observed ~ treatment + s(day_numeric, by = treatment),
+# Note: k = number of basis functions (must be <= unique timepoints)
+# We have 7 timepoints, so use k = 4 for smooth curves
+gam_model <- gam(Observed ~ treatment + s(day_numeric, by = treatment, k = 4),
                  data = alpha_df)
 plot(gam_model)
 
